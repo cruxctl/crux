@@ -17,5 +17,4 @@ jobs:
       - run: git diff --exit-code
       - run: go vet ./...
       - run: go test ./...
-      - run: go build ./cmd/crux ./cmd/cruxd
-
+      - run: go build ./cmd/crux

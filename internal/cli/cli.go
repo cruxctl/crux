@@ -6,15 +6,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"strings"
 
 	"github.com/cruxctl/crux/internal/client"
 	"github.com/cruxctl/crux/internal/config"
-	"github.com/cruxctl/crux/internal/daemon"
-	"github.com/cruxctl/crux/internal/domain"
-	"github.com/cruxctl/crux/internal/service"
+	"github.com/cruxctl/cruxd/pkg/cruxapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -61,7 +58,7 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 	var runErr error
 	switch cmd {
 	case "up":
-		runErr = c.up(ctx, rest)
+		runErr = c.up(ctx, opts, rest)
 	case "doctor":
 		runErr = c.doctor(ctx, opts)
 	case "version":
@@ -106,7 +103,7 @@ Global flags:
   -o, --output FMT   table, json, or yaml
 
 Commands:
-  up                 Run local cruxd in the foreground
+  up                 Ensure cruxd is installed and running
   doctor             Check daemon health
   version            Print client and server version
   context            Manage CLI contexts
@@ -139,9 +136,10 @@ func parseRoot(args []string) (rootOptions, string, []string, error) {
 	return opts, remaining[0], remaining[1:], nil
 }
 
-func (c *CLI) up(ctx context.Context, args []string) error {
-	var daemonConfigPath, address, storePath, apiKey string
+func (c *CLI) up(ctx context.Context, opts rootOptions, args []string) error {
+	var daemonConfigPath, address, storePath, apiKey, installScriptURL string
 	var port int
+	var yes, noStart bool
 	fs := flag.NewFlagSet("up", flag.ContinueOnError)
 	fs.SetOutput(c.err)
 	fs.StringVar(&daemonConfigPath, "daemon-config", "", "daemon config YAML path")
@@ -149,33 +147,79 @@ func (c *CLI) up(ctx context.Context, args []string) error {
 	fs.IntVar(&port, "port", 0, "listen port override")
 	fs.StringVar(&storePath, "store", "", "state store path override")
 	fs.StringVar(&apiKey, "api-key", "", "API key override")
+	fs.BoolVar(&yes, "yes", false, "download and install cruxd without prompting")
+	fs.BoolVar(&yes, "y", false, "download and install cruxd without prompting")
+	fs.BoolVar(&noStart, "no-start", false, "install cruxd but do not start it")
+	fs.StringVar(&installScriptURL, "install-script-url", defaultInstallScriptURL, "cruxd install script URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	cfg, err := config.LoadDaemonConfig(daemonConfigPath)
+
+	cl, ctxCfg, err := c.client(opts)
 	if err != nil {
 		return err
 	}
-	if address != "" {
-		cfg.Server.Address = address
+	healthCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
+	err = cl.Health(healthCtx)
+	cancel()
+	if err == nil {
+		fmt.Fprintf(c.out, "cruxd: already running at %s\n", ctxCfg.ServerURL)
+		return nil
 	}
-	if port != 0 {
-		cfg.Server.Port = port
-	}
-	if storePath != "" {
-		cfg.Store.Path, err = config.ExpandPath(storePath)
-		if err != nil {
+
+	daemonPath, found := findCruxd()
+	if !found {
+		if !yes {
+			ok, err := c.confirm(fmt.Sprintf("cruxd is not installed or not on PATH. Download and run %s?", installScriptURL))
+			if err != nil {
+				return err
+			}
+			if !ok {
+				return fmt.Errorf("cruxd installation declined")
+			}
+		}
+		if err := c.installCruxd(ctx, installScriptURL); err != nil {
 			return err
 		}
+		if noStart {
+			fmt.Fprintln(c.out, "cruxd installed")
+			return nil
+		}
+		if err := waitForHealth(ctx, cl, postInstallHealthTimeout); err == nil {
+			fmt.Fprintf(c.out, "cruxd: installed and running at %s\n", ctxCfg.ServerURL)
+			return nil
+		}
+		daemonPath, found = findCruxd()
+		if !found {
+			return fmt.Errorf("cruxd install completed but no cruxd binary was found on PATH or ~/.local/bin")
+		}
+	}
+
+	if noStart {
+		return fmt.Errorf("cruxd is offline at %s", ctxCfg.ServerURL)
+	}
+	daemonArgs := buildCruxdArgs(daemonConfigPath, address, port, storePath, apiKey)
+	return c.execCruxd(ctx, daemonPath, daemonArgs)
+}
+
+func buildCruxdArgs(configPath, address string, port int, storePath, apiKey string) []string {
+	args := []string{}
+	if configPath != "" {
+		args = append(args, "--config", configPath)
+	}
+	if address != "" {
+		args = append(args, "--address", address)
+	}
+	if port != 0 {
+		args = append(args, "--port", fmt.Sprintf("%d", port))
+	}
+	if storePath != "" {
+		args = append(args, "--store", storePath)
 	}
 	if apiKey != "" {
-		cfg.Security.APIKey = apiKey
+		args = append(args, "--api-key", apiKey)
 	}
-	if err := cfg.Validate(); err != nil {
-		return err
-	}
-	logger := slog.New(slog.NewTextHandler(c.err, &slog.HandlerOptions{}))
-	return daemon.Run(ctx, cfg, logger)
+	return args
 }
 
 func (c *CLI) doctor(ctx context.Context, opts rootOptions) error {
@@ -195,7 +239,7 @@ func (c *CLI) doctor(ctx context.Context, opts rootOptions) error {
 }
 
 func (c *CLI) version(ctx context.Context, opts rootOptions) error {
-	fmt.Fprintf(c.out, "crux client: %s\n", domain.Version)
+	fmt.Fprintf(c.out, "crux client: %s\n", cruxapi.Version)
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
@@ -294,7 +338,7 @@ func (c *CLI) runtimeConfig(ctx context.Context, opts rootOptions, args []string
 	}
 }
 
-func parseRuntimePatch(args []string, errOut io.Writer) (domain.RuntimeConfigPatch, error) {
+func parseRuntimePatch(args []string, errOut io.Writer) (cruxapi.RuntimeConfigPatch, error) {
 	var concurrency, timeout, maxOutput, discoveryTimeout, retention int
 	var logLevel, namespace string
 	var allowShell bool
@@ -309,9 +353,9 @@ func parseRuntimePatch(args []string, errOut io.Writer) (domain.RuntimeConfigPat
 	fs.StringVar(&namespace, "namespace", "", "default namespace")
 	fs.BoolVar(&allowShell, "allow-shell", false, "allow shell-backed agents")
 	if err := fs.Parse(args); err != nil {
-		return domain.RuntimeConfigPatch{}, err
+		return cruxapi.RuntimeConfigPatch{}, err
 	}
-	patch := domain.RuntimeConfigPatch{}
+	patch := cruxapi.RuntimeConfigPatch{}
 	if concurrency != 0 {
 		patch.WorkerConcurrency = &concurrency
 	}
@@ -369,7 +413,7 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 			return err
 		}
 		for _, agent := range agents {
-			if agent.Name == domain.CleanAgentName(args[1]) {
+			if agent.Name == cruxapi.CleanAgentName(args[1]) {
 				return c.print(firstNonEmpty(opts.output, "yaml"), agent)
 			}
 		}
@@ -408,17 +452,17 @@ func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client,
 	if cmdPath == "" {
 		return fmt.Errorf("--cmd is required")
 	}
-	agent := domain.Agent{
+	agent := cruxapi.Agent{
 		Name:        args[0],
 		Description: description,
-		Command: domain.CommandSpec{
+		Command: cruxapi.CommandSpec{
 			Path:           cmdPath,
 			Args:           cmdArgs,
 			Env:            parseEnv(envFlags),
 			WorkingDir:     workdir,
 			TimeoutSeconds: timeout,
 		},
-		Status: domain.AgentReady,
+		Status: cruxapi.AgentReady,
 	}
 	saved, err := cl.UpsertAgent(ctx, agent)
 	if err != nil {
@@ -470,7 +514,7 @@ func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string)
 	if err != nil {
 		return err
 	}
-	execution, err := cl.Run(ctx, service.SubmitRequest{
+	execution, err := cl.Run(ctx, cruxapi.SubmitExecutionRequest{
 		AgentName: filtered[0],
 		Prompt:    strings.Join(filtered[1:], " "),
 		Wait:      !async,
@@ -485,7 +529,7 @@ func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string)
 	if execution.Stderr != "" {
 		fmt.Fprint(c.err, execution.Stderr)
 	}
-	if execution.Status != domain.ExecutionSucceeded {
+	if execution.Status != cruxapi.ExecutionSucceeded {
 		return fmt.Errorf("execution %s failed: %s", execution.ID, execution.Error)
 	}
 	return nil

@@ -1,36 +1,22 @@
-# Architecture
+# Crux CLI Architecture
 
-The MVP is deliberately a single Go module with two binaries.
+`crux` is the operator CLI for the Crux MVP. The daemon/server lives in the separate [`cruxctl/cruxd`](https://github.com/cruxctl/cruxd) repository.
 
 ```text
 crux
-  CLI, context config, output formatting, HTTP client
-
-cruxd
-  HTTP API
-  runtime config manager
-  local JSON resource store
-  managed CLI discovery
-  worker limiter
-  command runner
-  event collector
+  CLI command routing
+  context config
+  output formatting
+  typed HTTP client
+  cruxd bootstrap installer
 ```
 
 The package boundaries are:
 
 | Package | Responsibility |
 |---|---|
-| `internal/domain` | Stable resource and runtime types. |
-| `internal/config` | YAML/env/flag configuration and CLI contexts. |
-| `internal/store` | Store interface plus local JSON implementation. |
-| `internal/discovery` | Managed CLI discovery adapters. |
-| `internal/runner` | Command execution boundary. |
-| `internal/worker` | Runtime concurrency primitives. |
-| `internal/service` | Use-case orchestration. |
-| `internal/api` | HTTP transport only. |
-| `internal/client` | Typed API client for the CLI. |
-| `internal/cli` | Operator command surface. |
-| `internal/daemon` | Process wiring and graceful shutdown. |
+| `internal/config` | CLI contexts and path helpers. |
+| `internal/client` | Typed HTTP client for `cruxd`. |
+| `internal/cli` | Operator command surface and `crux up` bootstrap flow. |
 
-The service layer depends on interfaces, not concrete transports. Future SQLite/Postgres stores, OpenTelemetry exporters, and runtime adapters should replace package internals without changing CLI command handlers or HTTP handlers.
-
+The CLI imports only `github.com/cruxctl/cruxd/pkg/cruxapi` from the daemon repo for request/response types. It does not embed the daemon, store, worker, runner, or HTTP server.

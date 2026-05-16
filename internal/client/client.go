@@ -10,9 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cruxctl/crux/internal/discovery"
-	"github.com/cruxctl/crux/internal/domain"
-	"github.com/cruxctl/crux/internal/service"
+	"github.com/cruxctl/cruxd/pkg/cruxapi"
 )
 
 type Client struct {
@@ -56,31 +54,31 @@ func (c *Client) Version(ctx context.Context) (string, error) {
 	return out.Version, nil
 }
 
-func (c *Client) RuntimeConfig(ctx context.Context) (domain.RuntimeConfig, error) {
+func (c *Client) RuntimeConfig(ctx context.Context) (cruxapi.RuntimeConfig, error) {
 	var out struct {
-		Runtime domain.RuntimeConfig `json:"runtime"`
+		Runtime cruxapi.RuntimeConfig `json:"runtime"`
 	}
 	if err := c.do(ctx, http.MethodGet, "/v1/config", nil, &out); err != nil {
-		return domain.RuntimeConfig{}, err
+		return cruxapi.RuntimeConfig{}, err
 	}
 	return out.Runtime, nil
 }
 
-func (c *Client) UpdateRuntimeConfig(ctx context.Context, patch domain.RuntimeConfigPatch) (domain.RuntimeConfig, error) {
-	var out domain.RuntimeConfig
+func (c *Client) UpdateRuntimeConfig(ctx context.Context, patch cruxapi.RuntimeConfigPatch) (cruxapi.RuntimeConfig, error) {
+	var out cruxapi.RuntimeConfig
 	if err := c.do(ctx, http.MethodPatch, "/v1/config/runtime", patch, &out); err != nil {
-		return domain.RuntimeConfig{}, err
+		return cruxapi.RuntimeConfig{}, err
 	}
 	return out, nil
 }
 
-func (c *Client) ListAgents(ctx context.Context) ([]domain.Agent, error) {
-	var out []domain.Agent
+func (c *Client) ListAgents(ctx context.Context) ([]cruxapi.Agent, error) {
+	var out []cruxapi.Agent
 	return out, c.do(ctx, http.MethodGet, "/v1/agents", nil, &out)
 }
 
-func (c *Client) UpsertAgent(ctx context.Context, agent domain.Agent) (domain.Agent, error) {
-	var out domain.Agent
+func (c *Client) UpsertAgent(ctx context.Context, agent cruxapi.Agent) (cruxapi.Agent, error) {
+	var out cruxapi.Agent
 	return out, c.do(ctx, http.MethodPost, "/v1/agents", agent, &out)
 }
 
@@ -88,32 +86,32 @@ func (c *Client) DeleteAgent(ctx context.Context, name string) error {
 	return c.do(ctx, http.MethodDelete, "/v1/agents/"+name, nil, nil)
 }
 
-func (c *Client) Discover(ctx context.Context) ([]discovery.Result, error) {
-	var out []discovery.Result
+func (c *Client) Discover(ctx context.Context) ([]cruxapi.DiscoveryResult, error) {
+	var out []cruxapi.DiscoveryResult
 	return out, c.do(ctx, http.MethodPost, "/v1/discover", map[string]any{}, &out)
 }
 
-func (c *Client) Run(ctx context.Context, req service.SubmitRequest) (domain.Execution, error) {
-	var out domain.Execution
+func (c *Client) Run(ctx context.Context, req cruxapi.SubmitExecutionRequest) (cruxapi.Execution, error) {
+	var out cruxapi.Execution
 	return out, c.do(ctx, http.MethodPost, "/v1/executions", req, &out)
 }
 
-func (c *Client) ListExecutions(ctx context.Context) ([]domain.Execution, error) {
-	var out []domain.Execution
+func (c *Client) ListExecutions(ctx context.Context) ([]cruxapi.Execution, error) {
+	var out []cruxapi.Execution
 	return out, c.do(ctx, http.MethodGet, "/v1/executions", nil, &out)
 }
 
-func (c *Client) GetExecution(ctx context.Context, id string) (domain.Execution, error) {
-	var out domain.Execution
+func (c *Client) GetExecution(ctx context.Context, id string) (cruxapi.Execution, error) {
+	var out cruxapi.Execution
 	return out, c.do(ctx, http.MethodGet, "/v1/executions/"+id, nil, &out)
 }
 
-func (c *Client) Events(ctx context.Context, executionID string) ([]domain.Event, error) {
+func (c *Client) Events(ctx context.Context, executionID string) ([]cruxapi.Event, error) {
 	path := "/v1/events"
 	if executionID != "" {
 		path = "/v1/executions/" + executionID + "/events"
 	}
-	var out []domain.Event
+	var out []cruxapi.Event
 	return out, c.do(ctx, http.MethodGet, path, nil, &out)
 }
 
