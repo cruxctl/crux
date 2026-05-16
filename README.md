@@ -97,6 +97,14 @@ crux -o yaml config get
 crux --server http://127.0.0.1:7790 doctor
 ```
 
+Every command supports command-local help:
+
+```bash
+crux discover --help
+crux agents describe --help
+crux help config set
+```
+
 ### Lifecycle
 
 Ensure the daemon exists and is running:
@@ -190,14 +198,14 @@ Remove an agent:
 crux agents rm echo
 ```
 
-Discover installed managed CLI agents on the daemon host's `PATH`:
+Discover installed managed CLI agents on the daemon host:
 
 ```bash
 crux discover
 crux -o json discover
 ```
 
-Current discovery candidates are `claude`, `codex`, `gemini`, and `kimi`.
+Current discovery candidates are `claude`, `codex`, `gemini`, and `kimi`. The daemon searches its service `PATH` plus common user binary locations, including NVM-managed Node.js bins.
 
 ### Executions
 
@@ -232,6 +240,7 @@ Show all daemon events:
 
 ```bash
 crux events
+crux events ls
 crux -o json events
 ```
 

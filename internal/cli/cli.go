@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -46,12 +47,41 @@ func New(out, err io.Writer) *CLI {
 func (c *CLI) Run(ctx context.Context, args []string) int {
 	opts, cmd, rest, err := parseRoot(args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			c.usage()
+			return 0
+		}
 		fmt.Fprintln(c.err, err)
 		c.usage()
 		return 2
 	}
-	if cmd == "" || cmd == "help" || cmd == "--help" || cmd == "-h" {
+	if cmd == "" || cmd == "--help" || cmd == "-h" {
 		c.usage()
+		return 0
+	}
+	if cmd == "help" {
+		if len(rest) == 0 {
+			c.usage()
+			return 0
+		}
+		if !c.commandUsage(rest[0], rest[1:]) {
+			fmt.Fprintf(c.err, "unknown command %q\n", rest[0])
+			return 1
+		}
+		return 0
+	}
+	if helpArg(rest) {
+		if !c.commandUsage(cmd, rest[1:]) {
+			fmt.Fprintf(c.err, "unknown command %q\n", cmd)
+			return 1
+		}
+		return 0
+	}
+	if nestedHelpArg(cmd, rest) {
+		if !c.commandUsage(cmd, []string{rest[0]}) {
+			fmt.Fprintf(c.err, "unknown command %q\n", cmd)
+			return 1
+		}
 		return 0
 	}
 
@@ -60,9 +90,9 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 	case "up":
 		runErr = c.up(ctx, opts, rest)
 	case "doctor":
-		runErr = c.doctor(ctx, opts)
+		runErr = c.doctor(ctx, opts, rest)
 	case "version":
-		runErr = c.version(ctx, opts)
+		runErr = c.version(ctx, opts, rest)
 	case "context":
 		runErr = c.context(opts, rest)
 	case "config":
@@ -70,19 +100,22 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 	case "agents":
 		runErr = c.agents(ctx, opts, rest)
 	case "discover":
-		runErr = c.discover(ctx, opts)
+		runErr = c.discover(ctx, opts, rest)
 	case "run":
 		runErr = c.runExecution(ctx, opts, rest)
 	case "ps":
-		runErr = c.ps(ctx, opts)
+		runErr = c.ps(ctx, opts, rest)
 	case "trace":
 		runErr = c.trace(ctx, opts, rest)
 	case "events":
-		runErr = c.events(ctx, opts)
+		runErr = c.events(ctx, opts, rest)
 	default:
 		runErr = fmt.Errorf("unknown command %q", cmd)
 	}
 	if runErr != nil {
+		if errors.Is(runErr, flag.ErrHelp) {
+			return 0
+		}
 		fmt.Fprintln(c.err, runErr)
 		return 1
 	}
@@ -108,12 +141,160 @@ Commands:
   version            Print client and server version
   context            Manage CLI contexts
   config             Get or update runtime config
-  discover           Discover managed CLI agents on PATH
+  discover           Discover managed CLI agents on daemon host
   agents             Manage command-backed agents
   run                Run an agent
   ps                 List executions
   trace              Show events for an execution
   events             Show all daemon events`)
+}
+
+func (c *CLI) commandUsage(command string, args []string) bool {
+	switch command {
+	case "up":
+		fmt.Fprintln(c.out, `Usage:
+  crux up [--yes] [--no-start] [--install-script-url URL]
+          [--daemon-config PATH] [--address ADDR] [--port PORT]
+          [--store PATH] [--api-key KEY]
+
+Ensure cruxd is installed and running.`)
+	case "doctor":
+		fmt.Fprintln(c.out, `Usage:
+  crux doctor
+
+Check daemon health.`)
+	case "version":
+		fmt.Fprintln(c.out, `Usage:
+  crux version
+
+Print client and server version.`)
+	case "context":
+		if len(args) > 0 {
+			return c.contextUsage(args[0])
+		}
+		fmt.Fprintln(c.out, `Usage:
+  crux context ls
+  crux context current
+  crux context set <name> --server URL [--api-key KEY] [--namespace NS]
+  crux context use <name>
+
+Manage CLI contexts.`)
+	case "config":
+		if len(args) > 0 {
+			return c.configUsage(args[0])
+		}
+		fmt.Fprintln(c.out, `Usage:
+  crux config get
+  crux config set [--concurrency N] [--job-timeout SECONDS]
+                  [--max-output-bytes BYTES] [--discovery-timeout SECONDS]
+                  [--trace-retention N] [--log-level LEVEL]
+                  [--namespace NAME] [--allow-shell=true|false]
+
+Get or update runtime config.`)
+	case "discover":
+		fmt.Fprintln(c.out, `Usage:
+  crux discover
+
+Discover managed CLI agents on the daemon host.`)
+	case "agents":
+		if len(args) > 0 {
+			return c.agentsUsage(args[0])
+		}
+		fmt.Fprintln(c.out, `Usage:
+  crux agents ls
+  crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE]
+  crux agents rm <name>
+  crux agents describe <name>
+
+Manage command-backed agents.`)
+	case "run":
+		fmt.Fprintln(c.out, `Usage:
+  crux run <agent> <prompt> [--async]
+
+Run an agent.`)
+	case "ps":
+		fmt.Fprintln(c.out, `Usage:
+  crux ps
+
+List executions.`)
+	case "trace":
+		fmt.Fprintln(c.out, `Usage:
+  crux trace <execution-id|last>
+
+Show events for an execution.`)
+	case "events":
+		fmt.Fprintln(c.out, `Usage:
+  crux events [ls]
+
+Show all daemon events.`)
+	default:
+		return false
+	}
+	return true
+}
+
+func (c *CLI) contextUsage(command string) bool {
+	switch command {
+	case "ls":
+		fmt.Fprintln(c.out, "Usage:\n  crux context ls")
+	case "current":
+		fmt.Fprintln(c.out, "Usage:\n  crux context current")
+	case "set":
+		fmt.Fprintln(c.out, "Usage:\n  crux context set <name> --server URL [--api-key KEY] [--namespace NS]")
+	case "use":
+		fmt.Fprintln(c.out, "Usage:\n  crux context use <name>")
+	default:
+		return false
+	}
+	return true
+}
+
+func (c *CLI) configUsage(command string) bool {
+	switch command {
+	case "get":
+		fmt.Fprintln(c.out, "Usage:\n  crux config get")
+	case "set":
+		fmt.Fprintln(c.out, `Usage:
+  crux config set [--concurrency N] [--job-timeout SECONDS]
+                  [--max-output-bytes BYTES] [--discovery-timeout SECONDS]
+                  [--trace-retention N] [--log-level LEVEL]
+                  [--namespace NAME] [--allow-shell=true|false]`)
+	default:
+		return false
+	}
+	return true
+}
+
+func (c *CLI) agentsUsage(command string) bool {
+	switch command {
+	case "ls":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents ls")
+	case "add":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE] [--description TEXT] [--workdir DIR] [--timeout SECONDS]")
+	case "rm":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents rm <name>")
+	case "describe":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents describe <name>")
+	default:
+		return false
+	}
+	return true
+}
+
+func helpArg(args []string) bool {
+	return len(args) > 0 && (args[0] == "--help" || args[0] == "-h" || args[0] == "help")
+}
+
+func nestedHelpArg(command string, args []string) bool {
+	if len(args) < 2 || (args[1] != "--help" && args[1] != "-h" && args[1] != "help") {
+		return false
+	}
+	switch command {
+	case "agents", "config", "context":
+		return true
+	default:
+		return false
+	}
 }
 
 func parseRoot(args []string) (rootOptions, string, []string, error) {
@@ -222,7 +403,10 @@ func buildCruxdArgs(configPath, address string, port int, storePath, apiKey stri
 	return args
 }
 
-func (c *CLI) doctor(ctx context.Context, opts rootOptions) error {
+func (c *CLI) doctor(ctx context.Context, opts rootOptions, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: crux doctor")
+	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
@@ -238,7 +422,10 @@ func (c *CLI) doctor(ctx context.Context, opts rootOptions) error {
 	return nil
 }
 
-func (c *CLI) version(ctx context.Context, opts rootOptions) error {
+func (c *CLI) version(ctx context.Context, opts rootOptions, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: crux version")
+	}
 	fmt.Fprintf(c.out, "crux client: %s\n", cruxapi.Version)
 	cl, _, err := c.client(opts)
 	if err != nil {
@@ -263,6 +450,9 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 	}
 	switch args[0] {
 	case "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux context ls")
+		}
 		for name, ctx := range cfg.Contexts {
 			marker := " "
 			if name == cfg.CurrentContext {
@@ -271,6 +461,9 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 			fmt.Fprintf(c.out, "%s %-16s %s\n", marker, name, ctx.ServerURL)
 		}
 	case "current":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux context current")
+		}
 		fmt.Fprintln(c.out, cfg.CurrentContext)
 	case "use":
 		if len(args) != 2 {
@@ -293,6 +486,9 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 		fs.StringVar(&namespace, "namespace", "default", "namespace")
 		if err := fs.Parse(args[2:]); err != nil {
 			return err
+		}
+		if fs.NArg() != 0 {
+			return fmt.Errorf("usage: crux context set <name> --server URL [--api-key KEY] [--namespace NS]")
 		}
 		if serverURL == "" {
 			return fmt.Errorf("--server is required")
@@ -318,6 +514,9 @@ func (c *CLI) runtimeConfig(ctx context.Context, opts rootOptions, args []string
 	}
 	switch args[0] {
 	case "get":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux config get")
+		}
 		runtime, err := cl.RuntimeConfig(ctx)
 		if err != nil {
 			return err
@@ -354,6 +553,9 @@ func parseRuntimePatch(args []string, errOut io.Writer) (cruxapi.RuntimeConfigPa
 	fs.BoolVar(&allowShell, "allow-shell", false, "allow shell-backed agents")
 	if err := fs.Parse(args); err != nil {
 		return cruxapi.RuntimeConfigPatch{}, err
+	}
+	if fs.NArg() != 0 {
+		return cruxapi.RuntimeConfigPatch{}, fmt.Errorf("usage: crux config set [flags]")
 	}
 	patch := cruxapi.RuntimeConfigPatch{}
 	if concurrency != 0 {
@@ -393,6 +595,9 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 	}
 	switch args[0] {
 	case "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux agents ls")
+		}
 		agents, err := cl.ListAgents(ctx)
 		if err != nil {
 			return err
@@ -449,6 +654,9 @@ func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client,
 	if err := fs.Parse(args[1:]); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE]")
+	}
 	if cmdPath == "" {
 		return fmt.Errorf("--cmd is required")
 	}
@@ -471,7 +679,10 @@ func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client,
 	return c.print(opts.output, saved)
 }
 
-func (c *CLI) discover(ctx context.Context, opts rootOptions) error {
+func (c *CLI) discover(ctx context.Context, opts rootOptions, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: crux discover")
+	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
@@ -535,7 +746,10 @@ func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string)
 	return nil
 }
 
-func (c *CLI) ps(ctx context.Context, opts rootOptions) error {
+func (c *CLI) ps(ctx context.Context, opts rootOptions, args []string) error {
+	if len(args) != 0 {
+		return fmt.Errorf("usage: crux ps")
+	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
@@ -586,7 +800,10 @@ func (c *CLI) trace(ctx context.Context, opts rootOptions, args []string) error 
 	return nil
 }
 
-func (c *CLI) events(ctx context.Context, opts rootOptions) error {
+func (c *CLI) events(ctx context.Context, opts rootOptions, args []string) error {
+	if len(args) > 1 || (len(args) == 1 && args[0] != "ls") {
+		return fmt.Errorf("usage: crux events [ls]")
+	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
