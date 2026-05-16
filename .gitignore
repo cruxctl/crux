@@ -1,0 +1,7 @@
+.crux/
+bin/
+coverage.out
+dist/
+*.log
+*.tmp
+
