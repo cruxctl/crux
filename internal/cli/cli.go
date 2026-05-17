@@ -1086,7 +1086,7 @@ func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string)
 		Wait:      !async,
 	})
 	if err != nil {
-		return err
+		return agentLookupError(filtered[0], err)
 	}
 	if opts.output != "table" {
 		if err := c.print(opts.output, execution); err != nil {
