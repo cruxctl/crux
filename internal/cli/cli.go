@@ -959,6 +959,13 @@ func (c *CLI) print(format string, value any) error {
 
 func (c *CLI) printAgentUsage(usage cruxapi.AgentUsage) error {
 	fmt.Fprintf(c.out, "Agent: %s\n", usage.AgentName)
+	if usage.Description != "" || usage.Status != "" || usage.Version != "" {
+		fmt.Fprintf(c.out, "Metadata: status=%s version=%s description=%s\n",
+			firstNonEmpty(string(usage.Status), "-"), firstNonEmpty(usage.Version, "-"), firstNonEmpty(usage.Description, "-"))
+	}
+	if usage.CommandPath != "" {
+		fmt.Fprintf(c.out, "Command: %s %s\n", usage.CommandPath, strings.Join(usage.CommandArgs, " "))
+	}
 	fmt.Fprintf(c.out, "Executions: total=%d succeeded=%d failed=%d running=%d queued=%d canceled=%d successRate=%.1f%%\n",
 		usage.ExecutionsTotal, usage.Succeeded, usage.Failed, usage.Running, usage.Queued, usage.Canceled, usage.SuccessRate*100)
 	fmt.Fprintf(c.out, "Output: stdoutBytes=%d stderrBytes=%d errors=%d\n", usage.StdoutBytes, usage.StderrBytes, usage.ErrorCount)
@@ -1000,13 +1007,15 @@ func (c *CLI) printAgentUsage(usage cruxapi.AgentUsage) error {
 		}
 	}
 	if len(usage.ExternalMetrics) > 0 {
-		fmt.Fprintln(c.out, "External metrics:")
+		fmt.Fprintln(c.out, "Live probes:")
 		for _, metric := range usage.ExternalMetrics {
 			status := "not available"
 			if metric.Available {
 				status = firstNonEmpty(metric.Value, "available")
+			} else if metric.Value != "" {
+				status = "not available (" + metric.Value + ")"
 			}
-			fmt.Fprintf(c.out, "  %s: %s", metric.Name, status)
+			fmt.Fprintf(c.out, "  %s: %s", metric.Name, oneLine(status))
 			if metric.Description != "" {
 				fmt.Fprintf(c.out, " - %s", metric.Description)
 			}
@@ -1109,4 +1118,14 @@ func formatSeconds(seconds float64) string {
 		return "0s"
 	}
 	return time.Duration(seconds * float64(time.Second)).Round(time.Millisecond).String()
+}
+
+func oneLine(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.ReplaceAll(value, "\r\n", " ")
+	value = strings.ReplaceAll(value, "\n", " | ")
+	if len(value) > 240 {
+		return value[:240] + "...(truncated)"
+	}
+	return value
 }
