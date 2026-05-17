@@ -98,6 +98,10 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 		}
 		return 0
 	}
+	if cmd == "agent" && len(rest) == 0 {
+		c.commandUsage("agent", nil)
+		return 0
+	}
 	closeLogs, err := c.configureLogging(opts)
 	if err != nil {
 		fmt.Fprintln(c.err, err)
@@ -235,6 +239,7 @@ Discover managed CLI agents on the daemon host.`)
   crux agents rm <name>
   crux agents describe <name>
   crux agent <name> describe
+  crux agent <name> usage
   crux agent <name> rm
 
 Manage command-backed agents.`)
@@ -898,7 +903,8 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 
 func (c *CLI) agent(ctx context.Context, opts rootOptions, args []string) error {
 	if len(args) == 0 || helpArg(args) {
-		return fmt.Errorf("usage: crux agent <name> [describe|usage|rm]")
+		c.commandUsage("agent", nil)
+		return nil
 	}
 	if len(args) >= 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help") {
 		c.commandUsage("agent", args[:1])
@@ -1081,9 +1087,10 @@ func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string)
 		return err
 	}
 	execution, err := cl.Run(ctx, cruxapi.SubmitExecutionRequest{
-		AgentName: filtered[0],
-		Prompt:    strings.Join(filtered[1:], " "),
-		Wait:      !async,
+		AgentName:  filtered[0],
+		Prompt:     strings.Join(filtered[1:], " "),
+		WorkingDir: currentWorkingDir(),
+		Wait:       !async,
 	})
 	if err != nil {
 		return agentLookupError(filtered[0], err)
@@ -1260,6 +1267,12 @@ func (c *CLI) printAgentUsage(usage cruxapi.AgentUsage) error {
 			usage.LastExecutionID, usage.LastStatus, usage.LastExitCode, queued)
 		if usage.LastError != "" {
 			fmt.Fprintf(c.out, "LastError: %s\n", usage.LastError)
+		}
+		if usage.LastStdout != "" {
+			fmt.Fprintf(c.out, "LastStdout: %s\n", oneLine(usage.LastStdout))
+		}
+		if usage.LastStderr != "" {
+			fmt.Fprintf(c.out, "LastStderr: %s\n", oneLine(usage.LastStderr))
 		}
 	}
 	if len(usage.ExitCodes) > 0 {
@@ -1458,6 +1471,14 @@ func formatSeconds(seconds float64) string {
 		return "0s"
 	}
 	return time.Duration(seconds * float64(time.Second)).Round(time.Millisecond).String()
+}
+
+func currentWorkingDir() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return wd
 }
 
 func oneLine(value string) string {

@@ -212,6 +212,8 @@ crux agent claude usage
 crux agent claude usage -o json
 ```
 
+`crux run` sends the current working directory to `cruxd` with the execution request. The daemon uses that directory unless the registered agent has an explicit `--workdir`, so managed CLIs keep the same project context the operator used at the shell.
+
 Register a command-backed agent. If any argument contains `{prompt}`, `cruxd` replaces it with the run prompt; otherwise the prompt is sent to stdin.
 
 ```bash
@@ -235,7 +237,7 @@ crux discover
 crux -o json discover
 ```
 
-Current discovery candidates are `claude`, `codex`, `gemini`, and `kimi`. The daemon searches its service `PATH` plus common user binary locations, including NVM-managed Node.js bins.
+Current discovery candidates are `claude`, `codex`, `gemini`, and `kimi`. The daemon searches its service `PATH` plus common user binary locations, including NVM-managed Node.js bins. Discovery registers daemon-safe headless command templates such as `codex exec --skip-git-repo-check {prompt}`, `gemini --skip-trust -p {prompt}`, and `kimi --quiet --prompt {prompt}`.
 
 ### Executions
 

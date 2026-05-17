@@ -3,8 +3,14 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
+
+	"github.com/cruxctl/cruxd/pkg/cruxapi"
 )
 
 func TestDiscoverHelpDoesNotCallDaemon(t *testing.T) {
@@ -31,6 +37,72 @@ func TestNestedHelpDoesNotCallDaemon(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "crux agents describe <name>") {
 		t.Fatalf("expected agents describe usage, got %q", out.String())
+	}
+}
+
+func TestAgentGroupWithoutNamePrintsHelp(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := New(&out, &errOut).Run(context.Background(), []string{"agent"})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "crux agent <name> usage") {
+		t.Fatalf("expected agent usage help, got %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", errOut.String())
+	}
+}
+
+func TestAgentsHelpMentionsAgentUsage(t *testing.T) {
+	var out, errOut bytes.Buffer
+	code := New(&out, &errOut).Run(context.Background(), []string{"agents", "--help"})
+
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, errOut.String())
+	}
+	if !strings.Contains(out.String(), "crux agent <name> usage") {
+		t.Fatalf("expected agents help to mention usage, got %q", out.String())
+	}
+}
+
+func TestRunSendsCurrentWorkingDirectory(t *testing.T) {
+	var out, errOut bytes.Buffer
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/executions" {
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+		var req cruxapi.SubmitExecutionRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		if req.WorkingDir != cwd {
+			t.Fatalf("expected workingDir %q, got %q", cwd, req.WorkingDir)
+		}
+		execution := cruxapi.Execution{
+			ID:            "exec_test",
+			AgentName:     req.AgentName,
+			Prompt:        req.Prompt,
+			WorkingDir:    req.WorkingDir,
+			Status:        cruxapi.ExecutionSucceeded,
+			QueuedAt:      cruxapi.Now(),
+			UpdatedAt:     cruxapi.Now(),
+			RuntimeConfig: cruxapi.DefaultRuntimeConfig(),
+		}
+		if err := json.NewEncoder(w).Encode(execution); err != nil {
+			t.Fatal(err)
+		}
+	}))
+	defer server.Close()
+
+	code := New(&out, &errOut).Run(context.Background(), []string{"--server", server.URL, "run", "codex", "hi"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stdout=%q stderr=%q", code, out.String(), errOut.String())
 	}
 }
 
