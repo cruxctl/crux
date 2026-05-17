@@ -141,6 +141,16 @@ func (c *Client) AgentHistory(ctx context.Context, name string) ([]cruxapi.Agent
 	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/history", nil, &out)
 }
 
+func (c *Client) AgentExecPlan(ctx context.Context, name string, req cruxapi.AgentExecPlanRequest) (cruxapi.AgentExecPlan, error) {
+	var out cruxapi.AgentExecPlan
+	return out, c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(name)+"/exec/plan", req, &out)
+}
+
+func (c *Client) RecordAgentExec(ctx context.Context, name string, req cruxapi.AgentExecRecordRequest) (cruxapi.AgentExecRecordResponse, error) {
+	var out cruxapi.AgentExecRecordResponse
+	return out, c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(name)+"/exec/record", req, &out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	if strings.TrimSpace(c.baseURL) == "" {
 		return fmt.Errorf("server URL is required")

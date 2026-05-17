@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -112,6 +113,67 @@ func TestRunSendsCurrentWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestAgentExecDryRunUsesDaemonPlan(t *testing.T) {
+	var out, errOut bytes.Buffer
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	planCalled := false
+	recordCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/codex/exec/plan":
+			planCalled = true
+			if r.Method != http.MethodPost {
+				t.Fatalf("expected POST, got %s", r.Method)
+			}
+			var req cruxapi.AgentExecPlanRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req.WorkingDir != cwd {
+				t.Fatalf("expected workingDir %q, got %q", cwd, req.WorkingDir)
+			}
+			if req.ResumeSession != "last" {
+				t.Fatalf("expected resume last, got %q", req.ResumeSession)
+			}
+			if strings.Join(req.Args, " ") != "--no-alt-screen" {
+				t.Fatalf("unexpected provider args: %#v", req.Args)
+			}
+			plan := cruxapi.AgentExecPlan{
+				AgentName: "codex",
+				Provider:  "openai-codex",
+				Command: cruxapi.CommandSpec{
+					Path:       "/usr/bin/codex",
+					Args:       []string{"resume", "--all", "--last", "--no-alt-screen"},
+					WorkingDir: cwd,
+				},
+			}
+			if err := json.NewEncoder(w).Encode(plan); err != nil {
+				t.Fatal(err)
+			}
+		case "/v1/agents/codex/exec/record":
+			recordCalled = true
+			t.Fatalf("dry run should not record")
+		default:
+			t.Fatalf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	code := New(&out, &errOut).Run(context.Background(), []string{"--server", server.URL, "agent", "codex", "exec", "--dry-run", "--resume", "last", "--", "--no-alt-screen"})
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stdout=%q stderr=%q", code, out.String(), errOut.String())
+	}
+	if !planCalled || recordCalled {
+		t.Fatalf("planCalled=%v recordCalled=%v", planCalled, recordCalled)
+	}
+	if !strings.Contains(out.String(), "Command: /usr/bin/codex resume --all --last --no-alt-screen") {
+		t.Fatalf("expected dry-run command, got %q", out.String())
+	}
+}
+
 func TestDiscoverRejectsUnexpectedArgsBeforeClient(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := New(&out, &errOut).Run(context.Background(), []string{"discover", "extra"})
@@ -177,6 +239,29 @@ func TestParseRunArgsSupportsResumeHistoryAndFallback(t *testing.T) {
 	}
 	if strings.Join(got.FallbackAgents, ",") != "gemini,claude" {
 		t.Fatalf("unexpected fallbacks: %#v", got.FallbackAgents)
+	}
+}
+
+func TestDirectTTYWritesTranscript(t *testing.T) {
+	var out, errOut bytes.Buffer
+	transcript := filepath.Join(t.TempDir(), "tty.log")
+	result := New(&out, &errOut).runDirectTTY(cruxapi.CommandSpec{
+		Path: "/usr/bin/printf",
+		Args: []string{"hello"},
+	}, agentExecOptions{TranscriptPath: transcript}, "direct")
+
+	if result.ExitCode != 0 || result.Error != "" {
+		t.Fatalf("unexpected direct result: %+v stderr=%q", result, errOut.String())
+	}
+	if out.String() != "hello" {
+		t.Fatalf("expected stdout hello, got %q", out.String())
+	}
+	data, err := os.ReadFile(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("expected transcript hello, got %q", string(data))
 	}
 }
 

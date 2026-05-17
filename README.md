@@ -14,6 +14,7 @@ V0.1 CLI responsibilities:
 - discover managed CLI agents through `cruxd`;
 - submit executions and read traces/events;
 - read unified managed-agent usage, cost signals, external provider sessions, Crux execution history, resume plans, and fallback settings;
+- open managed-agent TUIs through daemon-planned commands, capture PTY transcripts with `expect` or `script`, and import those transcripts into Crux history;
 - update runtime config through `cruxd`;
 - install or update both `crux` and `cruxd` through explicit installer scripts.
 
@@ -236,6 +237,20 @@ crux agent claude usage -o json
 `crux run` sends the current working directory to `cruxd` with the execution request. The daemon uses that directory unless the registered agent has an explicit `--workdir`, so managed CLIs keep the same project context the operator used at the shell.
 
 Managed-agent session lists include sessions created directly in the provider CLI outside Crux when a stable CLI option or local provider store exposes a resumable ID. Claude sessions are read from the local Claude Code project store, Codex sessions from `$CODEX_HOME/sessions` or `~/.codex/sessions`, Gemini sessions through `gemini --list-sessions`, and Kimi sessions from `$KIMI_SHARE_DIR/sessions` or `~/.kimi/sessions`. When Crux knows the original session working directory, resume runs use it automatically.
+
+Open a managed provider TUI through Crux:
+
+```bash
+crux agent codex exec
+crux agent codex exec --resume last -- --no-alt-screen
+crux agent gemini exec --send "/help" --send "/quit" --expect "help" --timeout 30
+crux agent claude exec --dry-run
+crux agent kimi exec --transcript ~/.local/state/crux/tty/kimi-session.log
+```
+
+`crux agent <name> exec` asks `cruxd` for the provider-specific TUI command, then runs it locally with `expect` when available, otherwise `script`, otherwise a direct subprocess fallback. Transcripts are stored under `~/.local/state/crux/tty/` by default and posted back to `cruxd` when the session exits. That import creates a normal immutable Crux execution, so `crux ps`, `crux trace`, `crux agent <name> usage`, `crux agent <name> cost`, `crux agent <name> sessions`, and history share/replay commands include interactive work as well as headless `crux run` work.
+
+Use `--send` and `--expect` for scripted probes. Include the provider's normal quit command in `--send` when automating a TUI, and set `--timeout` to cap the scripted session. Use `--no-record` only when you want a local transcript without adding it to Crux history.
 
 Register a command-backed agent. If any argument contains `{prompt}`, `cruxd` replaces it with the run prompt; otherwise the prompt is sent to stdin.
 
