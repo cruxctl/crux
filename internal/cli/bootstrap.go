@@ -58,14 +58,14 @@ func (c *CLI) confirm(prompt string) (bool, error) {
 	return answer == "y" || answer == "yes", nil
 }
 
-func (c *CLI) runInstaller(ctx context.Context, shellURL, powershellURL string, args []string, env map[string]string) error {
+func (c *CLI) runInstaller(ctx context.Context, shellURL, powershellURL string, args []string, env map[string]string, stdout io.Writer) error {
 	if runtime.GOOS == "windows" {
-		return c.runPowerShellInstaller(ctx, powershellURL, args, env)
+		return c.runPowerShellInstaller(ctx, powershellURL, args, env, stdout)
 	}
-	return c.runShellInstaller(ctx, shellURL, args, env)
+	return c.runShellInstaller(ctx, shellURL, args, env, stdout)
 }
 
-func (c *CLI) runShellInstaller(ctx context.Context, scriptURL string, args []string, env map[string]string) error {
+func (c *CLI) runShellInstaller(ctx context.Context, scriptURL string, args []string, env map[string]string, stdout io.Writer) error {
 	resolvedURL, err := resolveInstallScriptURL(ctx, scriptURL)
 	if err != nil {
 		return err
@@ -103,7 +103,7 @@ func (c *CLI) runShellInstaller(ctx context.Context, scriptURL string, args []st
 	cmdArgs := append([]string{tmpPath}, args...)
 	cmd := exec.CommandContext(ctx, "/bin/sh", cmdArgs...)
 	cmd.Env = mergeProcessEnv(os.Environ(), env)
-	cmd.Stdout = c.out
+	cmd.Stdout = stdout
 	cmd.Stderr = c.err
 	cmd.Stdin = os.Stdin
 	if err := cmd.Run(); err != nil {
@@ -112,7 +112,7 @@ func (c *CLI) runShellInstaller(ctx context.Context, scriptURL string, args []st
 	return nil
 }
 
-func (c *CLI) runPowerShellInstaller(ctx context.Context, scriptURL string, args []string, env map[string]string) error {
+func (c *CLI) runPowerShellInstaller(ctx context.Context, scriptURL string, args []string, env map[string]string, stdout io.Writer) error {
 	resolvedURL, err := resolveInstallScriptURL(ctx, scriptURL)
 	if err != nil {
 		return err
@@ -151,7 +151,7 @@ func (c *CLI) runPowerShellInstaller(ctx context.Context, scriptURL string, args
 	cmdArgs := append([]string{"-NoProfile", "-ExecutionPolicy", "Bypass", "-File", tmpPath}, args...)
 	cmd := exec.CommandContext(ctx, ps, cmdArgs...)
 	cmd.Env = mergeProcessEnv(os.Environ(), env)
-	cmd.Stdout = c.out
+	cmd.Stdout = stdout
 	cmd.Stderr = c.err
 	cmd.Stdin = os.Stdin
 	return cmd.Run()

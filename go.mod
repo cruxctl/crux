@@ -4,4 +4,4 @@ go 1.26.2
 
 require gopkg.in/yaml.v3 v3.0.1
 
-require github.com/cruxctl/cruxd v0.0.0-20260517114424-5d43c8a74f77
+require github.com/cruxctl/cruxd v0.0.0-20260517141102-afb40322e983

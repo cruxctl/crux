@@ -104,6 +104,7 @@ Global form:
 
 ```bash
 crux [global flags] <command> [args]
+crux <command> [args] [global flags]
 ```
 
 Global flags:
@@ -118,10 +119,12 @@ Global flags:
 | `--log-level LEVEL` | CLI log level: `debug`, `info`, `warn`, or `error`. |
 | `--log-file PATH` | Rotated CLI log file path. Use `none` to disable file logging. |
 
-Global flags must appear before the command:
+Global flags may appear before the command or after command arguments:
 
 ```bash
 crux -o yaml config get
+crux config get -o yaml
+crux agent gemini usage -o json
 crux --server http://127.0.0.1:7790 doctor
 ```
 
@@ -200,9 +203,13 @@ List and inspect registered agents:
 
 ```bash
 crux agents ls
+crux agents
 crux agents describe echo
-crux -o yaml agents describe echo
+crux agents describe echo -o yaml
+crux agent echo
+crux agent echo describe
 crux agent claude usage
+crux agent claude usage -o json
 ```
 
 Register a command-backed agent. If any argument contains `{prompt}`, `cruxd` replaces it with the run prompt; otherwise the prompt is sent to stdin.
@@ -218,6 +225,7 @@ Remove an agent:
 
 ```bash
 crux agents rm echo
+crux agent echo rm
 ```
 
 Discover installed managed CLI agents on the daemon host:
@@ -235,12 +243,14 @@ Run an agent and wait for output:
 
 ```bash
 crux run echo "hello from crux"
+crux run echo "hello from crux" -o yaml
 ```
 
 Queue an execution asynchronously:
 
 ```bash
 crux run echo "background job" --async
+crux run echo "background job" --async -o json
 ```
 
 List executions:

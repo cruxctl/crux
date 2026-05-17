@@ -48,3 +48,43 @@ func TestDiscoverRejectsUnexpectedArgsBeforeClient(t *testing.T) {
 		t.Fatalf("unexpected stdout: %q", out.String())
 	}
 }
+
+func TestOutputFlagCanFollowCommand(t *testing.T) {
+	opts, cmd, rest, err := parseRoot([]string{"agent", "gemini", "usage", "-o", "yaml"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, err = applyOutputFlag(opts.output, rest, &opts.output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != "agent" {
+		t.Fatalf("expected command agent, got %q", cmd)
+	}
+	if opts.output != "yaml" {
+		t.Fatalf("expected yaml output, got %q", opts.output)
+	}
+	if strings.Join(rest, " ") != "gemini usage" {
+		t.Fatalf("unexpected rest: %#v", rest)
+	}
+}
+
+func TestOutputFlagCanAppearBeforeCommandArgs(t *testing.T) {
+	opts, cmd, rest, err := parseRoot([]string{"run", "-o", "json", "gemini", "hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rest, err = applyOutputFlag(opts.output, rest, &opts.output)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cmd != "run" {
+		t.Fatalf("expected command run, got %q", cmd)
+	}
+	if opts.output != "json" {
+		t.Fatalf("expected json output, got %q", opts.output)
+	}
+	if strings.Join(rest, " ") != "gemini hi" {
+		t.Fatalf("unexpected rest: %#v", rest)
+	}
+}

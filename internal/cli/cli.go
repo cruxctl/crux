@@ -79,6 +79,11 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 		}
 		return 0
 	}
+	rest, err = applyOutputFlag(opts.output, rest, &opts.output)
+	if err != nil {
+		fmt.Fprintln(c.err, err)
+		return 2
+	}
 	if helpArg(rest) {
 		if !c.commandUsage(cmd, rest[1:]) {
 			fmt.Fprintf(c.err, "unknown command %q\n", cmd)
@@ -147,6 +152,7 @@ func (c *CLI) usage() {
 
 Usage:
   crux [global flags] <command> [args]
+  crux <command> [args] [global flags]
 
 Global flags:
   --config PATH      CLI config file (default ~/.config/crux/config.yaml)
@@ -228,9 +234,18 @@ Discover managed CLI agents on the daemon host.`)
   crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE]
   crux agents rm <name>
   crux agents describe <name>
+  crux agent <name> describe
+  crux agent <name> rm
 
 Manage command-backed agents.`)
 	case "agent":
+		if len(args) > 1 && args[1] == "describe" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> describe
+
+Describe one agent.`)
+			return true
+		}
 		if len(args) > 1 && args[1] == "usage" {
 			fmt.Fprintln(c.out, `Usage:
   crux agent <name> usage
@@ -238,8 +253,18 @@ Manage command-backed agents.`)
 Show local execution usage metrics for one agent.`)
 			return true
 		}
+		if len(args) > 1 && args[1] == "rm" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> rm
+
+Remove one agent.`)
+			return true
+		}
 		fmt.Fprintln(c.out, `Usage:
+  crux agent <name>
+  crux agent <name> describe
   crux agent <name> usage
+  crux agent <name> rm
 
 Inspect one agent.`)
 	case "run":
@@ -303,7 +328,7 @@ func (c *CLI) configUsage(command string) bool {
 func (c *CLI) agentsUsage(command string) bool {
 	switch command {
 	case "ls":
-		fmt.Fprintln(c.out, "Usage:\n  crux agents ls")
+		fmt.Fprintln(c.out, "Usage:\n  crux agents [ls]")
 	case "add":
 		fmt.Fprintln(c.out, "Usage:\n  crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE] [--description TEXT] [--workdir DIR] [--timeout SECONDS]")
 	case "rm":
@@ -348,11 +373,66 @@ func parseRoot(args []string) (rootOptions, string, []string, error) {
 	if err := fs.Parse(args); err != nil {
 		return opts, "", nil, err
 	}
+	output, err := normalizeOutput(opts.output)
+	if err != nil {
+		return opts, "", nil, err
+	}
+	opts.output = output
 	remaining := fs.Args()
 	if len(remaining) == 0 {
 		return opts, "", nil, nil
 	}
 	return opts, remaining[0], remaining[1:], nil
+}
+
+func applyOutputFlag(current string, args []string, output *string) ([]string, error) {
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "-o" || arg == "--output":
+			if i+1 >= len(args) {
+				return nil, fmt.Errorf("%s requires a value: table, json, or yaml", arg)
+			}
+			value, err := normalizeOutput(args[i+1])
+			if err != nil {
+				return nil, err
+			}
+			*output = value
+			i++
+		case strings.HasPrefix(arg, "--output="):
+			value, err := normalizeOutput(strings.TrimPrefix(arg, "--output="))
+			if err != nil {
+				return nil, err
+			}
+			*output = value
+		case strings.HasPrefix(arg, "-o="):
+			value, err := normalizeOutput(strings.TrimPrefix(arg, "-o="))
+			if err != nil {
+				return nil, err
+			}
+			*output = value
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	if *output == "" {
+		*output = current
+	}
+	return filtered, nil
+}
+
+func normalizeOutput(format string) (string, error) {
+	format = strings.ToLower(strings.TrimSpace(format))
+	if format == "" {
+		return "table", nil
+	}
+	switch format {
+	case "table", "json", "yaml":
+		return format, nil
+	default:
+		return "", fmt.Errorf("unsupported output format %q; expected table, json, or yaml", format)
+	}
 }
 
 func (c *CLI) update(ctx context.Context, opts rootOptions, args []string) error {
@@ -409,21 +489,31 @@ func (c *CLI) update(ctx context.Context, opts rootOptions, args []string) error
 	if force {
 		installerArgs = append(installerArgs, "--force")
 	}
+	installerOut := c.out
+	if opts.output != "table" {
+		installerOut = c.err
+	}
 	switch component {
 	case "all":
-		fmt.Fprintln(c.out, "updating crux and cruxd")
-		if err := c.runInstaller(ctx, cruxScriptURL, cruxPowerShellURL, installerArgs, env); err != nil {
+		if opts.output == "table" {
+			fmt.Fprintln(c.out, "updating crux and cruxd")
+		}
+		if err := c.runInstaller(ctx, cruxScriptURL, cruxPowerShellURL, installerArgs, env, installerOut); err != nil {
 			return err
 		}
 	case "crux":
-		fmt.Fprintln(c.out, "updating crux")
+		if opts.output == "table" {
+			fmt.Fprintln(c.out, "updating crux")
+		}
 		args := append([]string{}, installerArgs...)
 		args = append(args, "--skip-cruxd")
-		if err := c.runInstaller(ctx, cruxScriptURL, cruxPowerShellURL, args, env); err != nil {
+		if err := c.runInstaller(ctx, cruxScriptURL, cruxPowerShellURL, args, env, installerOut); err != nil {
 			return err
 		}
 	case "cruxd":
-		fmt.Fprintln(c.out, "updating cruxd")
+		if opts.output == "table" {
+			fmt.Fprintln(c.out, "updating cruxd")
+		}
 		args := []string{"--version", cruxdVersion}
 		if noStart {
 			args = append(args, "--no-start")
@@ -431,11 +521,14 @@ func (c *CLI) update(ctx context.Context, opts rootOptions, args []string) error
 		if force {
 			args = append(args, "--force")
 		}
-		if err := c.runInstaller(ctx, cruxdScriptURL, cruxdPowerShellURL, args, env); err != nil {
+		if err := c.runInstaller(ctx, cruxdScriptURL, cruxdPowerShellURL, args, env, installerOut); err != nil {
 			return err
 		}
 	}
 	if noStart || component == "crux" {
+		if opts.output != "table" {
+			return c.print(opts.output, updateResult(component, cruxVersion, cruxdVersion, noStart, "installed"))
+		}
 		return nil
 	}
 	cl, ctxCfg, err := c.client(opts)
@@ -445,8 +538,37 @@ func (c *CLI) update(ctx context.Context, opts rootOptions, args []string) error
 	if err := waitForHealth(ctx, cl, postInstallHealthTimeout); err != nil {
 		return fmt.Errorf("cruxd was updated but did not become healthy at %s: %w", ctxCfg.ServerURL, err)
 	}
+	if opts.output != "table" {
+		result := updateResult(component, cruxVersion, cruxdVersion, noStart, "running")
+		result.ServerURL = ctxCfg.ServerURL
+		return c.print(opts.output, result)
+	}
 	fmt.Fprintf(c.out, "cruxd: running at %s\n", ctxCfg.ServerURL)
 	return nil
+}
+
+func updateResult(component, cruxVersion, cruxdVersion string, noStart bool, status string) struct {
+	Component    string `json:"component" yaml:"component"`
+	CruxVersion  string `json:"cruxVersion,omitempty" yaml:"cruxVersion,omitempty"`
+	CruxdVersion string `json:"cruxdVersion,omitempty" yaml:"cruxdVersion,omitempty"`
+	Status       string `json:"status" yaml:"status"`
+	ServerURL    string `json:"serverUrl,omitempty" yaml:"serverUrl,omitempty"`
+	Started      bool   `json:"started" yaml:"started"`
+} {
+	return struct {
+		Component    string `json:"component" yaml:"component"`
+		CruxVersion  string `json:"cruxVersion,omitempty" yaml:"cruxVersion,omitempty"`
+		CruxdVersion string `json:"cruxdVersion,omitempty" yaml:"cruxdVersion,omitempty"`
+		Status       string `json:"status" yaml:"status"`
+		ServerURL    string `json:"serverUrl,omitempty" yaml:"serverUrl,omitempty"`
+		Started      bool   `json:"started" yaml:"started"`
+	}{
+		Component:    component,
+		CruxVersion:  cruxVersion,
+		CruxdVersion: cruxdVersion,
+		Status:       status,
+		Started:      !noStart && component != "crux",
+	}
 }
 
 func (c *CLI) doctor(ctx context.Context, opts rootOptions, args []string) error {
@@ -464,6 +586,17 @@ func (c *CLI) doctor(ctx context.Context, opts rootOptions, args []string) error
 	if err != nil {
 		return fmt.Errorf("cruxd version: %w", err)
 	}
+	if opts.output != "table" {
+		return c.print(opts.output, struct {
+			Daemon        string `json:"daemon" yaml:"daemon"`
+			Status        string `json:"status" yaml:"status"`
+			ServerVersion string `json:"serverVersion" yaml:"serverVersion"`
+		}{
+			Daemon:        "cruxd",
+			Status:        "ok",
+			ServerVersion: version,
+		})
+	}
 	fmt.Fprintf(c.out, "cruxd: ok (%s)\n", version)
 	return nil
 }
@@ -472,16 +605,40 @@ func (c *CLI) version(ctx context.Context, opts rootOptions, args []string) erro
 	if len(args) != 0 {
 		return fmt.Errorf("usage: crux version")
 	}
-	fmt.Fprintf(c.out, "crux client: %s\n", cruxapi.Version)
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
 	}
 	version, err := cl.Version(ctx)
 	if err != nil {
+		if opts.output != "table" {
+			return c.print(opts.output, struct {
+				Client          string `json:"client" yaml:"client"`
+				Server          string `json:"server,omitempty" yaml:"server,omitempty"`
+				ServerAvailable bool   `json:"serverAvailable" yaml:"serverAvailable"`
+				Error           string `json:"error,omitempty" yaml:"error,omitempty"`
+			}{
+				Client:          cruxapi.Version,
+				ServerAvailable: false,
+				Error:           err.Error(),
+			})
+		}
+		fmt.Fprintf(c.out, "crux client: %s\n", cruxapi.Version)
 		fmt.Fprintf(c.out, "crux server: unavailable (%v)\n", err)
 		return nil
 	}
+	if opts.output != "table" {
+		return c.print(opts.output, struct {
+			Client          string `json:"client" yaml:"client"`
+			Server          string `json:"server" yaml:"server"`
+			ServerAvailable bool   `json:"serverAvailable" yaml:"serverAvailable"`
+		}{
+			Client:          cruxapi.Version,
+			Server:          version,
+			ServerAvailable: true,
+		})
+	}
+	fmt.Fprintf(c.out, "crux client: %s\n", cruxapi.Version)
 	fmt.Fprintf(c.out, "crux server: %s\n", version)
 	return nil
 }
@@ -504,6 +661,24 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 			names = append(names, name)
 		}
 		sort.Strings(names)
+		rows := make([]struct {
+			Name      string `json:"name" yaml:"name"`
+			ServerURL string `json:"serverUrl" yaml:"serverUrl"`
+			Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+			Current   bool   `json:"current" yaml:"current"`
+		}, 0, len(names))
+		for _, name := range names {
+			ctx := cfg.Contexts[name]
+			rows = append(rows, struct {
+				Name      string `json:"name" yaml:"name"`
+				ServerURL string `json:"serverUrl" yaml:"serverUrl"`
+				Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+				Current   bool   `json:"current" yaml:"current"`
+			}{Name: name, ServerURL: ctx.ServerURL, Namespace: ctx.Namespace, Current: name == cfg.CurrentContext})
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, rows)
+		}
 		for _, name := range names {
 			ctx := cfg.Contexts[name]
 			marker := " "
@@ -516,16 +691,39 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("usage: crux context current")
 		}
+		if opts.output != "table" {
+			ctx, ok := cfg.Contexts[cfg.CurrentContext]
+			if !ok {
+				return fmt.Errorf("current context %q not found", cfg.CurrentContext)
+			}
+			return c.print(opts.output, struct {
+				Name      string `json:"name" yaml:"name"`
+				ServerURL string `json:"serverUrl" yaml:"serverUrl"`
+				Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+			}{Name: cfg.CurrentContext, ServerURL: ctx.ServerURL, Namespace: ctx.Namespace})
+		}
 		fmt.Fprintln(c.out, cfg.CurrentContext)
 	case "use":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: crux context use <name>")
 		}
-		if _, ok := cfg.Contexts[args[1]]; !ok {
+		ctx, ok := cfg.Contexts[args[1]]
+		if !ok {
 			return fmt.Errorf("context %q not found", args[1])
 		}
 		cfg.CurrentContext = args[1]
-		return config.SaveCLIConfig(path, cfg)
+		if err := config.SaveCLIConfig(path, cfg); err != nil {
+			return err
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, struct {
+				Name      string `json:"name" yaml:"name"`
+				ServerURL string `json:"serverUrl" yaml:"serverUrl"`
+				Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+				Current   bool   `json:"current" yaml:"current"`
+			}{Name: args[1], ServerURL: ctx.ServerURL, Namespace: ctx.Namespace, Current: true})
+		}
+		fmt.Fprintf(c.out, "current context: %s\n", args[1])
 	case "set":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: crux context set <name> --server URL [--api-key KEY] [--namespace NS]")
@@ -549,7 +747,18 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 		if cfg.CurrentContext == "" {
 			cfg.CurrentContext = args[1]
 		}
-		return config.SaveCLIConfig(path, cfg)
+		if err := config.SaveCLIConfig(path, cfg); err != nil {
+			return err
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, struct {
+				Name      string `json:"name" yaml:"name"`
+				ServerURL string `json:"serverUrl" yaml:"serverUrl"`
+				Namespace string `json:"namespace,omitempty" yaml:"namespace,omitempty"`
+				Current   bool   `json:"current" yaml:"current"`
+			}{Name: args[1], ServerURL: serverURL, Namespace: namespace, Current: cfg.CurrentContext == args[1]})
+		}
+		fmt.Fprintf(c.out, "context %q set\n", args[1])
 	default:
 		return fmt.Errorf("unknown context command %q", args[0])
 	}
@@ -573,7 +782,11 @@ func (c *CLI) runtimeConfig(ctx context.Context, opts rootOptions, args []string
 		if err != nil {
 			return err
 		}
-		return c.print(opts.output, runtime)
+		if opts.output != "table" {
+			return c.print(opts.output, runtime)
+		}
+		printRuntimeConfigTable(c.out, runtime)
+		return nil
 	case "set":
 		patch, err := parseRuntimePatch(args[1:], c.err)
 		if err != nil {
@@ -583,7 +796,11 @@ func (c *CLI) runtimeConfig(ctx context.Context, opts rootOptions, args []string
 		if err != nil {
 			return err
 		}
-		return c.print(opts.output, runtime)
+		if opts.output != "table" {
+			return c.print(opts.output, runtime)
+		}
+		printRuntimeConfigTable(c.out, runtime)
+		return nil
 	default:
 		return fmt.Errorf("unknown config command %q", args[0])
 	}
@@ -639,7 +856,7 @@ func parseRuntimePatch(args []string, errOut io.Writer) (cruxapi.RuntimeConfigPa
 
 func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: crux agents <ls|add|rm|describe>")
+		args = []string{"ls"}
 	}
 	cl, _, err := c.client(opts)
 	if err != nil {
@@ -665,23 +882,14 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 		if len(args) != 2 {
 			return fmt.Errorf("usage: crux agents describe <name>")
 		}
-		agents, err := cl.ListAgents(ctx)
-		if err != nil {
-			return err
-		}
-		for _, agent := range agents {
-			if agent.Name == cruxapi.CleanAgentName(args[1]) {
-				return c.print(firstNonEmpty(opts.output, "yaml"), agent)
-			}
-		}
-		return fmt.Errorf("agent %q not found", args[1])
+		return c.describeAgent(ctx, opts, cl, args[1])
 	case "add":
 		return c.addAgent(ctx, opts, cl, args[1:])
 	case "rm":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: crux agents rm <name>")
 		}
-		return cl.DeleteAgent(ctx, args[1])
+		return c.deleteAgent(ctx, opts, cl, args[1])
 	default:
 		return fmt.Errorf("unknown agents command %q", args[0])
 	}
@@ -690,27 +898,44 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 
 func (c *CLI) agent(ctx context.Context, opts rootOptions, args []string) error {
 	if len(args) == 0 || helpArg(args) {
-		return fmt.Errorf("usage: crux agent <name> usage")
+		return fmt.Errorf("usage: crux agent <name> [describe|usage|rm]")
 	}
-	if len(args) == 3 && (args[2] == "--help" || args[2] == "-h" || args[2] == "help") && args[1] == "usage" {
-		c.commandUsage("agent", []string{args[0], "usage"})
+	if len(args) >= 2 && (args[1] == "--help" || args[1] == "-h" || args[1] == "help") {
+		c.commandUsage("agent", args[:1])
 		return nil
 	}
-	if len(args) != 2 || args[1] != "usage" {
-		return fmt.Errorf("usage: crux agent <name> usage")
+	if len(args) == 3 && (args[2] == "--help" || args[2] == "-h" || args[2] == "help") {
+		c.commandUsage("agent", args[:2])
+		return nil
+	}
+	if len(args) > 2 {
+		return fmt.Errorf("usage: crux agent <name> [describe|usage|rm]")
 	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
 	}
-	usage, err := cl.AgentUsage(ctx, args[0])
-	if err != nil {
-		return err
+	action := "describe"
+	if len(args) == 2 {
+		action = args[1]
 	}
-	if opts.output != "table" {
-		return c.print(opts.output, usage)
+	switch action {
+	case "describe":
+		return c.describeAgent(ctx, opts, cl, args[0])
+	case "usage":
+		usage, err := cl.AgentUsage(ctx, args[0])
+		if err != nil {
+			return agentLookupError(args[0], err)
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, usage)
+		}
+		return c.printAgentUsage(usage)
+	case "rm":
+		return c.deleteAgent(ctx, opts, cl, args[0])
+	default:
+		return fmt.Errorf("unknown agent command %q; expected describe, usage, or rm", action)
 	}
-	return c.printAgentUsage(usage)
 }
 
 func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client, args []string) error {
@@ -757,7 +982,56 @@ func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client,
 	if err != nil {
 		return err
 	}
-	return c.print(opts.output, saved)
+	if opts.output != "table" {
+		return c.print(opts.output, saved)
+	}
+	printAgentDetailTable(c.out, saved)
+	return nil
+}
+
+func (c *CLI) describeAgent(ctx context.Context, opts rootOptions, cl *client.Client, name string) error {
+	agent, err := findAgent(ctx, cl, name)
+	if err != nil {
+		return err
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, agent)
+	}
+	printAgentDetailTable(c.out, agent)
+	return nil
+}
+
+func (c *CLI) deleteAgent(ctx context.Context, opts rootOptions, cl *client.Client, name string) error {
+	cleanName := cruxapi.CleanAgentName(name)
+	if err := cl.DeleteAgent(ctx, cleanName); err != nil {
+		return agentLookupError(cleanName, err)
+	}
+	result := struct {
+		Deleted   bool   `json:"deleted" yaml:"deleted"`
+		AgentName string `json:"agentName" yaml:"agentName"`
+	}{
+		Deleted:   true,
+		AgentName: cleanName,
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, result)
+	}
+	fmt.Fprintf(c.out, "agent %q removed\n", cleanName)
+	return nil
+}
+
+func findAgent(ctx context.Context, cl *client.Client, name string) (cruxapi.Agent, error) {
+	cleanName := cruxapi.CleanAgentName(name)
+	agents, err := cl.ListAgents(ctx)
+	if err != nil {
+		return cruxapi.Agent{}, err
+	}
+	for _, agent := range agents {
+		if agent.Name == cleanName {
+			return agent, nil
+		}
+	}
+	return cruxapi.Agent{}, fmt.Errorf("agent %q not found; run \"crux discover\" first or add it with \"crux agents add\"", name)
 }
 
 func (c *CLI) discover(ctx context.Context, opts rootOptions, args []string) error {
@@ -814,8 +1088,18 @@ func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string)
 	if err != nil {
 		return err
 	}
-	if opts.output != "table" || async {
-		return c.print(opts.output, execution)
+	if opts.output != "table" {
+		if err := c.print(opts.output, execution); err != nil {
+			return err
+		}
+		if !async && execution.Status != cruxapi.ExecutionSucceeded {
+			return fmt.Errorf("execution %s failed: %s", execution.ID, execution.Error)
+		}
+		return nil
+	}
+	if async {
+		printExecutionTable(c.out, []cruxapi.Execution{execution})
+		return nil
 	}
 	fmt.Fprint(c.out, execution.Stdout)
 	if execution.Stderr != "" {
@@ -842,10 +1126,7 @@ func (c *CLI) ps(ctx context.Context, opts rootOptions, args []string) error {
 	if opts.output != "table" {
 		return c.print(opts.output, executions)
 	}
-	fmt.Fprintf(c.out, "%-29s %-18s %-10s %-10s %-6s %s\n", "ID", "AGENT", "STATUS", "DURATION", "EXIT", "QUEUED")
-	for _, execution := range executions {
-		fmt.Fprintf(c.out, "%-29s %-18s %-10s %-10s %-6d %s\n", execution.ID, execution.AgentName, execution.Status, executionDuration(execution), execution.ExitCode, execution.QueuedAt.Format(time.RFC3339))
-	}
+	printExecutionTable(c.out, executions)
 	return nil
 }
 
@@ -940,11 +1221,10 @@ func (c *CLI) configureLogging(opts rootOptions) (func() error, error) {
 func (c *CLI) print(format string, value any) error {
 	switch format {
 	case "", "table", "json":
-		data, err := json.MarshalIndent(value, "", "  ")
-		if err != nil {
-			return err
-		}
-		fmt.Fprintln(c.out, string(data))
+		encoder := json.NewEncoder(c.out)
+		encoder.SetEscapeHTML(false)
+		encoder.SetIndent("", "  ")
+		return encoder.Encode(value)
 	case "yaml":
 		data, err := yaml.Marshal(value)
 		if err != nil {
@@ -1028,6 +1308,58 @@ func (c *CLI) printAgentUsage(usage cruxapi.AgentUsage) error {
 	return nil
 }
 
+func printAgentDetailTable(out io.Writer, agent cruxapi.Agent) {
+	fmt.Fprintf(out, "Name: %s\n", agent.Name)
+	fmt.Fprintf(out, "ID: %s\n", firstNonEmpty(agent.ID, "-"))
+	fmt.Fprintf(out, "Status: %s\n", firstNonEmpty(string(agent.Status), "-"))
+	if agent.Description != "" {
+		fmt.Fprintf(out, "Description: %s\n", agent.Description)
+	}
+	fmt.Fprintf(out, "Command: %s %s\n", agent.Command.Path, strings.Join(agent.Command.Args, " "))
+	if agent.Command.WorkingDir != "" {
+		fmt.Fprintf(out, "WorkingDir: %s\n", agent.Command.WorkingDir)
+	}
+	if agent.Command.TimeoutSeconds > 0 {
+		fmt.Fprintf(out, "Timeout: %ds\n", agent.Command.TimeoutSeconds)
+	}
+	if len(agent.Labels) > 0 {
+		fmt.Fprintln(out, "Labels:")
+		keys := make([]string, 0, len(agent.Labels))
+		for key := range agent.Labels {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(out, "  %s: %s\n", key, agent.Labels[key])
+		}
+	}
+	if !agent.CreatedAt.IsZero() {
+		fmt.Fprintf(out, "Created: %s\n", agent.CreatedAt.Format(time.RFC3339))
+	}
+	if !agent.UpdatedAt.IsZero() {
+		fmt.Fprintf(out, "Updated: %s\n", agent.UpdatedAt.Format(time.RFC3339))
+	}
+}
+
+func printRuntimeConfigTable(out io.Writer, runtime cruxapi.RuntimeConfig) {
+	fmt.Fprintf(out, "%-28s %s\n", "KEY", "VALUE")
+	fmt.Fprintf(out, "%-28s %d\n", "workerConcurrency", runtime.WorkerConcurrency)
+	fmt.Fprintf(out, "%-28s %d\n", "jobTimeoutSeconds", runtime.JobTimeoutSeconds)
+	fmt.Fprintf(out, "%-28s %d\n", "maxOutputBytes", runtime.MaxOutputBytes)
+	fmt.Fprintf(out, "%-28s %d\n", "discoveryTimeoutSeconds", runtime.DiscoveryTimeoutSecs)
+	fmt.Fprintf(out, "%-28s %s\n", "logLevel", runtime.LogLevel)
+	fmt.Fprintf(out, "%-28s %s\n", "defaultNamespace", runtime.DefaultNamespace)
+	fmt.Fprintf(out, "%-28s %t\n", "allowShellCommands", runtime.AllowShellCommands)
+	fmt.Fprintf(out, "%-28s %d\n", "traceRetentionEntries", runtime.TraceRetentionEntries)
+}
+
+func printExecutionTable(out io.Writer, executions []cruxapi.Execution) {
+	fmt.Fprintf(out, "%-29s %-18s %-10s %-10s %-6s %s\n", "ID", "AGENT", "STATUS", "DURATION", "EXIT", "QUEUED")
+	for _, execution := range executions {
+		fmt.Fprintf(out, "%-29s %-18s %-10s %-10s %-6d %s\n", execution.ID, execution.AgentName, execution.Status, executionDuration(execution), execution.ExitCode, execution.QueuedAt.Format(time.RFC3339))
+	}
+}
+
 func parseEnv(values []string) (map[string]string, error) {
 	if len(values) == 0 {
 		return nil, nil
@@ -1042,6 +1374,14 @@ func parseEnv(values []string) (map[string]string, error) {
 		env[key] = val
 	}
 	return env, nil
+}
+
+func agentLookupError(name string, err error) error {
+	var apiErr *client.APIError
+	if errors.As(err, &apiErr) && apiErr.StatusCode == 404 {
+		return fmt.Errorf("agent %q not found; run \"crux discover\" first or add it with \"crux agents add\"", name)
+	}
+	return err
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {
