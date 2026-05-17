@@ -5,7 +5,9 @@ REPO="${CRUX_REPO:-github.com/cruxctl/crux}"
 VERSION="${CRUX_VERSION:-latest}"
 BIN_DIR="${CRUX_BIN_DIR:-$HOME/.local/bin}"
 CONFIG_DIR="${CRUX_CONFIG_DIR:-$HOME/.config/crux}"
-CRUXD_INSTALL_URL="${CRUXD_INSTALL_URL:-https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh}"
+CRUXD_INSTALL_URL_DEFAULT="https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh"
+CRUXD_INSTALL_URL="${CRUXD_INSTALL_URL:-$CRUXD_INSTALL_URL_DEFAULT}"
+CRUXD_INSTALL_REF="${CRUXD_INSTALL_REF:-main}"
 INSTALL_CRUXD="${CRUX_INSTALL_CRUXD:-1}"
 FORCE="${CRUX_FORCE:-0}"
 START="${CRUXD_START:-1}"
@@ -26,6 +28,51 @@ fail() {
 
 need() {
   command -v "$1" >/dev/null 2>&1 || fail "required command not found: $1"
+}
+
+is_sha() {
+  case "$1" in
+    *[!0-9a-fA-F]*|"")
+      return 1
+      ;;
+    *)
+      [ "${#1}" -eq 40 ]
+      ;;
+  esac
+}
+
+resolve_github_ref() {
+  ref="$1"
+  if is_sha "$ref"; then
+    printf '%s' "$ref"
+    return 0
+  fi
+
+  if command -v git >/dev/null 2>&1; then
+    sha="$(git ls-remote https://github.com/cruxctl/cruxd.git "refs/heads/$ref" "refs/tags/$ref" | awk 'NR == 1 { print $1 }')"
+    if [ -n "$sha" ]; then
+      printf '%s' "$sha"
+      return 0
+    fi
+  fi
+
+  curl -fsSL \
+    -H 'Accept: application/vnd.github+json' \
+    -H 'User-Agent: crux-installer' \
+    "https://api.github.com/repos/cruxctl/cruxd/commits/$ref" |
+    sed -n 's/^[[:space:]]*"sha":[[:space:]]*"\([0-9a-fA-F]\{40\}\)".*/\1/p' |
+    head -n 1
+}
+
+resolve_cruxd_install_url() {
+  if [ "$CRUXD_INSTALL_URL" != "$CRUXD_INSTALL_URL_DEFAULT" ]; then
+    printf '%s' "$CRUXD_INSTALL_URL"
+    return 0
+  fi
+
+  sha="$(resolve_github_ref "$CRUXD_INSTALL_REF")"
+  [ -n "$sha" ] || fail "could not resolve cruxd installer ref: $CRUXD_INSTALL_REF"
+  printf 'https://raw.githubusercontent.com/cruxctl/cruxd/%s/scripts/install-cruxd.sh' "$sha"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -70,6 +117,7 @@ if [ "$INSTALL_CRUXD" = "1" ]; then
   cruxd_args=""
   [ "$FORCE" = "1" ] && cruxd_args="$cruxd_args --force"
   [ "$START" = "0" ] && cruxd_args="$cruxd_args --no-start"
+  CRUXD_INSTALL_URL="$(resolve_cruxd_install_url)"
   curl -fsSL "$CRUXD_INSTALL_URL" | CRUXD_VERSION="${CRUXD_VERSION:-$VERSION}" sh -s -- $cruxd_args
 fi
 

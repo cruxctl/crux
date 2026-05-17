@@ -4,6 +4,7 @@ param(
     [string]$BinDir = $(if ($env:CRUX_BIN_DIR) { $env:CRUX_BIN_DIR } else { Join-Path $env:LOCALAPPDATA "Crux\bin" }),
     [string]$ConfigDir = $(if ($env:CRUX_CONFIG_DIR) { $env:CRUX_CONFIG_DIR } else { Join-Path $env:APPDATA "Crux" }),
     [string]$CruxdInstallUrl = $(if ($env:CRUXD_INSTALL_URL) { $env:CRUXD_INSTALL_URL } else { "https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.ps1" }),
+    [string]$CruxdInstallRef = $(if ($env:CRUXD_INSTALL_REF) { $env:CRUXD_INSTALL_REF } else { "main" }),
     [switch]$Force,
     [switch]$SkipCruxd,
     [switch]$NoStart
@@ -17,12 +18,54 @@ function Require-Command($Name) {
     }
 }
 
+function Test-Sha($Value) {
+    return $Value -match "^[0-9a-fA-F]{40}$"
+}
+
+function Resolve-GitHubRef($Ref) {
+    if (Test-Sha $Ref) {
+        return $Ref
+    }
+
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        $Lines = git ls-remote https://github.com/cruxctl/cruxd.git "refs/heads/$Ref" "refs/tags/$Ref"
+        if ($LASTEXITCODE -eq 0 -and $Lines) {
+            $First = @($Lines)[0]
+            $Sha = ($First -split "\s+")[0]
+            if (Test-Sha $Sha) {
+                return $Sha
+            }
+        }
+    }
+
+    $Headers = @{
+        "Accept" = "application/vnd.github+json"
+        "User-Agent" = "crux-installer"
+    }
+    $Response = Invoke-RestMethod -Uri "https://api.github.com/repos/cruxctl/cruxd/commits/$Ref" -Headers $Headers
+    if (-not (Test-Sha $Response.sha)) {
+        throw "could not resolve cruxd installer ref: $Ref"
+    }
+    return $Response.sha
+}
+
+function Resolve-CruxdInstallUrl {
+    $DefaultUrl = "https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.ps1"
+    if ($CruxdInstallUrl -ne $DefaultUrl) {
+        return $CruxdInstallUrl
+    }
+
+    $Sha = Resolve-GitHubRef $CruxdInstallRef
+    return "https://raw.githubusercontent.com/cruxctl/cruxd/$Sha/scripts/install-cruxd.ps1"
+}
+
 Require-Command go
 New-Item -ItemType Directory -Force -Path $BinDir, $ConfigDir | Out-Null
 
 if (-not $SkipCruxd) {
     $ScriptPath = Join-Path ([System.IO.Path]::GetTempPath()) ("install-cruxd-" + [System.Guid]::NewGuid().ToString("N") + ".ps1")
-    Invoke-WebRequest -Uri $CruxdInstallUrl -UseBasicParsing -OutFile $ScriptPath
+    $ResolvedCruxdInstallUrl = Resolve-CruxdInstallUrl
+    Invoke-WebRequest -Uri $ResolvedCruxdInstallUrl -UseBasicParsing -OutFile $ScriptPath
     try {
         $Args = @("-Version", $(if ($env:CRUXD_VERSION) { $env:CRUXD_VERSION } else { $Version }))
         if ($Force) { $Args += "-Force" }

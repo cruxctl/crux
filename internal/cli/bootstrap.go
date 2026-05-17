@@ -3,6 +3,7 @@ package cli
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/cruxctl/crux/internal/client"
 )
@@ -21,6 +23,7 @@ const (
 	defaultCruxInstallPowerShellURL  = "https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.ps1"
 	defaultCruxdInstallScriptURL     = "https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh"
 	defaultCruxdInstallPowerShellURL = "https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.ps1"
+	githubAPIBaseURL                 = "https://api.github.com"
 )
 
 var (
@@ -63,10 +66,16 @@ func (c *CLI) runInstaller(ctx context.Context, shellURL, powershellURL string, 
 }
 
 func (c *CLI) runShellInstaller(ctx context.Context, scriptURL string, args []string, env map[string]string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scriptURL, nil)
+	resolvedURL, err := resolveInstallScriptURL(ctx, scriptURL)
 	if err != nil {
 		return err
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("User-Agent", "crux")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download install script: %w", err)
@@ -104,10 +113,16 @@ func (c *CLI) runShellInstaller(ctx context.Context, scriptURL string, args []st
 }
 
 func (c *CLI) runPowerShellInstaller(ctx context.Context, scriptURL string, args []string, env map[string]string) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, scriptURL, nil)
+	resolvedURL, err := resolveInstallScriptURL(ctx, scriptURL)
 	if err != nil {
 		return err
 	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, resolvedURL, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Cache-Control", "no-cache")
+	req.Header.Set("User-Agent", "crux")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("download install script: %w", err)
@@ -140,6 +155,71 @@ func (c *CLI) runPowerShellInstaller(ctx context.Context, scriptURL string, args
 	cmd.Stderr = c.err
 	cmd.Stdin = os.Stdin
 	return cmd.Run()
+}
+
+func resolveInstallScriptURL(ctx context.Context, scriptURL string) (string, error) {
+	switch scriptURL {
+	case defaultCruxInstallScriptURL:
+		return commitPinnedRawURL(ctx, "cruxctl", "crux", "main", "scripts/install-crux.sh")
+	case defaultCruxInstallPowerShellURL:
+		return commitPinnedRawURL(ctx, "cruxctl", "crux", "main", "scripts/install-crux.ps1")
+	case defaultCruxdInstallScriptURL:
+		return commitPinnedRawURL(ctx, "cruxctl", "cruxd", "main", "scripts/install-cruxd.sh")
+	case defaultCruxdInstallPowerShellURL:
+		return commitPinnedRawURL(ctx, "cruxctl", "cruxd", "main", "scripts/install-cruxd.ps1")
+	default:
+		return scriptURL, nil
+	}
+}
+
+func commitPinnedRawURL(ctx context.Context, owner, repo, ref, path string) (string, error) {
+	sha, err := resolveGitHubSHA(ctx, owner, repo, ref)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, sha, path), nil
+}
+
+func resolveGitHubSHA(ctx context.Context, owner, repo, ref string) (string, error) {
+	if isSHA(ref) {
+		return strings.ToLower(ref), nil
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/repos/%s/%s/commits/%s", githubAPIBaseURL, owner, repo, ref), nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "crux")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("resolve %s/%s@%s: %w", owner, repo, ref, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("resolve %s/%s@%s: HTTP %d", owner, repo, ref, resp.StatusCode)
+	}
+	var commit struct {
+		SHA string `json:"sha"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64*1024)).Decode(&commit); err != nil {
+		return "", fmt.Errorf("resolve %s/%s@%s: %w", owner, repo, ref, err)
+	}
+	if !isSHA(commit.SHA) {
+		return "", fmt.Errorf("resolve %s/%s@%s: invalid sha %q", owner, repo, ref, commit.SHA)
+	}
+	return strings.ToLower(commit.SHA), nil
+}
+
+func isSHA(value string) bool {
+	if len(value) != 40 {
+		return false
+	}
+	for _, r := range value {
+		if !unicode.Is(unicode.ASCII_Hex_Digit, r) {
+			return false
+		}
+	}
+	return true
 }
 
 func waitForHealth(ctx context.Context, cl *client.Client, timeout time.Duration) error {

@@ -34,6 +34,8 @@ Force-refresh the local daemon binary and user service:
 curl -fsSL https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.sh | sh -s -- --force
 ```
 
+By default the CLI installer resolves the `cruxd` installer to a commit-pinned raw GitHub URL before running it, so branch-level raw cache cannot install a stale daemon. Set `CRUXD_INSTALL_REF` to test a different daemon branch, tag, or commit.
+
 ### Windows
 
 PowerShell installs the current-user binaries and registers `cruxd` as a scheduled task:
@@ -275,7 +277,7 @@ https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh
 https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.ps1
 ```
 
-The `crux` installer calls the `cruxd` installer first unless `--skip-cruxd` is passed. Preview installers build native binaries with Go for Linux, macOS, and Windows on amd64 or arm64 hosts.
+The `crux` installer calls the `cruxd` installer first unless `--skip-cruxd` is passed. Preview installers build native binaries with Go for Linux, macOS, and Windows on amd64 or arm64 hosts. When the default daemon installer URL is used, the wrapper resolves `CRUXD_INSTALL_REF` through GitHub and downloads the script from the resolved commit SHA instead of a mutable branch URL.
 
 ## Development
 
