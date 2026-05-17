@@ -12,8 +12,8 @@ V0.1 CLI responsibilities:
 - call the `cruxd` HTTP API;
 - register and inspect command-backed agents;
 - discover managed CLI agents through `cruxd`;
-- submit executions and read traces/events;
-- read unified managed-agent usage, cost signals, external provider sessions, Crux execution history, resume plans, and fallback settings;
+- submit transcript-backed TTY executions and read traces/events;
+- read unified managed-agent usage, cost signals, sessions, Crux execution history, resume plans, and fallback settings from imported TTY transcripts;
 - open managed-agent TUIs through daemon-planned commands, capture PTY transcripts with `expect` or `script`, and import those transcripts into Crux history;
 - update runtime config through `cruxd`;
 - install or update both `crux` and `cruxd` through explicit installer scripts.
@@ -234,21 +234,22 @@ crux agent codex fallback set gemini,claude
 crux agent claude usage -o json
 ```
 
-`crux run` sends the current working directory to `cruxd` with the execution request. The daemon uses that directory unless the registered agent has an explicit `--workdir`, so managed CLIs keep the same project context the operator used at the shell.
+`crux run` now uses the same TTY exec plan/record path as `crux agent <name> exec`. The CLI asks `cruxd` for a provider-specific TUI command, opens it locally, inserts the prompt, captures the transcript, and imports the result as an immutable Crux execution. The current working directory is sent with the exec plan unless the registered agent has an explicit `--workdir`.
 
-Managed-agent session lists include sessions created directly in the provider CLI outside Crux when a stable CLI option or local provider store exposes a resumable ID. Claude sessions are read from the local Claude Code project store, Codex sessions from `$CODEX_HOME/sessions` or `~/.codex/sessions`, Gemini sessions through `gemini --list-sessions`, and Kimi sessions from `$KIMI_SHARE_DIR/sessions` or `~/.kimi/sessions`. When Crux knows the original session working directory, resume runs use it automatically.
+Managed-agent session, usage, cost, and history views are transcript-backed. Provider-private session stores are not read directly by `cruxd`; use `crux agent <name> exec`, `crux run`, `crux agent <name> resume`, or history sharing to import provider TTY activity into Crux.
 
 Open a managed provider TUI through Crux:
 
 ```bash
 crux agent codex exec
+crux agent claude exec "inserting into this session"
 crux agent codex exec --resume last -- --no-alt-screen
 crux agent gemini exec --send "/help" --send "/quit" --expect "help" --timeout 30
 crux agent claude exec --dry-run
 crux agent kimi exec --transcript ~/.local/state/crux/tty/kimi-session.log
 ```
 
-`crux agent <name> exec` asks `cruxd` for the provider-specific TUI command, then runs it locally with `expect` when available, otherwise `script`, otherwise a direct subprocess fallback. Transcripts are stored under `~/.local/state/crux/tty/` by default and posted back to `cruxd` when the session exits. That import creates a normal immutable Crux execution, so `crux ps`, `crux trace`, `crux agent <name> usage`, `crux agent <name> cost`, `crux agent <name> sessions`, and history share/replay commands include interactive work as well as headless `crux run` work.
+`crux agent <name> exec "<text>"` asks `cruxd` for the provider-specific TUI command, then runs it locally with `expect` when available, otherwise `script`, otherwise a direct subprocess fallback. Transcripts are stored under `~/.local/state/crux/tty/` by default and posted back to `cruxd` when the session exits. That import creates a normal immutable Crux execution, so `crux ps`, `crux trace`, `crux agent <name> usage`, `crux agent <name> cost`, `crux agent <name> sessions`, and history share/replay commands all read the same transcript-backed state.
 
 Use `--send` and `--expect` for scripted probes. Include the provider's normal quit command in `--send` when automating a TUI, and set `--timeout` to cap the scripted session. Use `--no-record` only when you want a local transcript without adding it to Crux history.
 
@@ -283,7 +284,7 @@ crux discover
 crux -o json discover
 ```
 
-Current discovery candidates are `claude`, `codex`, `gemini`, and `kimi`. The daemon searches its service `PATH` plus common user binary locations, including NVM-managed Node.js bins. Discovery registers daemon-safe headless command templates such as `codex exec --skip-git-repo-check {prompt}`, `gemini --skip-trust -p {prompt}`, and `kimi --quiet --prompt {prompt}`.
+Current discovery candidates are `claude`, `codex`, `gemini`, and `kimi`. The daemon searches its service `PATH` plus common user binary locations, including NVM-managed Node.js bins. Discovery keeps the registered command paths for identity and custom-agent compatibility; managed-agent run/resume/exec behavior is planned through the TTY adapter layer.
 
 ### Executions
 
@@ -298,12 +299,7 @@ crux run codex --resume 019e3715-cdcc-78a2-bc76-a40edfb67fdc "continue this outs
 crux run claude --from exec_abc123 --prompt "turn the previous answer into a checklist"
 ```
 
-Queue an execution asynchronously:
-
-```bash
-crux run echo "background job" --async
-crux run echo "background job" --async -o json
-```
+`--async` is retired for `crux run` because runs now depend on a local TTY transcript and must stay attached until the transcript is recorded.
 
 List executions:
 
@@ -324,7 +320,7 @@ crux agent claude resume last "continue the previous Claude session"
 crux agent kimi resume 567cbc06-5586-4110-bb57-6cb6c16ce761 "continue this Kimi session from Crux"
 ```
 
-Cost views are evidence-based. Crux shows realtime local execution state, duration, output volume, and provider usage text when a managed CLI exposes it. It does not invent token or billing counters when the provider CLI has no stable noninteractive command.
+Cost views are evidence-based. Crux shows realtime local execution state, duration, output volume, and provider usage text only when that evidence appears in imported TTY transcripts.
 
 Show execution events:
 

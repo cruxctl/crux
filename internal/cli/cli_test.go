@@ -81,28 +81,61 @@ func TestRunSendsCurrentWorkingDirectory(t *testing.T) {
 			}
 			return
 		}
-		if r.URL.Path != "/v1/executions" {
+		switch r.URL.Path {
+		case "/v1/agents/codex/exec/plan":
+			var req cruxapi.AgentExecPlanRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req.WorkingDir != cwd {
+				t.Fatalf("expected workingDir %q, got %q", cwd, req.WorkingDir)
+			}
+			if req.Prompt != "hi" {
+				t.Fatalf("expected prompt hi, got %q", req.Prompt)
+			}
+			plan := cruxapi.AgentExecPlan{
+				AgentName: "codex",
+				Provider:  "codex",
+				Command: cruxapi.CommandSpec{
+					Path:       "/usr/bin/printf",
+					Args:       []string{"hi"},
+					WorkingDir: req.WorkingDir,
+				},
+				Prompt:    req.Prompt,
+				Operation: req.Operation,
+			}
+			if err := json.NewEncoder(w).Encode(plan); err != nil {
+				t.Fatal(err)
+			}
+		case "/v1/agents/codex/exec/record":
+			var req cruxapi.AgentExecRecordRequest
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				t.Fatal(err)
+			}
+			if req.WorkingDir != cwd {
+				t.Fatalf("expected record workingDir %q, got %q", cwd, req.WorkingDir)
+			}
+			execution := cruxapi.Execution{
+				ID:            "exec_test",
+				AgentName:     "codex",
+				Prompt:        req.Prompt,
+				WorkingDir:    req.WorkingDir,
+				Status:        cruxapi.ExecutionSucceeded,
+				QueuedAt:      cruxapi.Now(),
+				UpdatedAt:     cruxapi.Now(),
+				RuntimeConfig: cruxapi.DefaultRuntimeConfig(),
+			}
+			record := cruxapi.AgentExecRecordResponse{
+				Execution: execution,
+				Usage:     cruxapi.AgentUsage{AgentName: "codex", ExecutionsTotal: 1, Succeeded: 1},
+				Cost:      cruxapi.AgentCostSnapshot{AgentName: "codex"},
+			}
+			w.WriteHeader(http.StatusCreated)
+			if err := json.NewEncoder(w).Encode(record); err != nil {
+				t.Fatal(err)
+			}
+		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
-		}
-		var req cruxapi.SubmitExecutionRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			t.Fatal(err)
-		}
-		if req.WorkingDir != cwd {
-			t.Fatalf("expected workingDir %q, got %q", cwd, req.WorkingDir)
-		}
-		execution := cruxapi.Execution{
-			ID:            "exec_test",
-			AgentName:     req.AgentName,
-			Prompt:        req.Prompt,
-			WorkingDir:    req.WorkingDir,
-			Status:        cruxapi.ExecutionSucceeded,
-			QueuedAt:      cruxapi.Now(),
-			UpdatedAt:     cruxapi.Now(),
-			RuntimeConfig: cruxapi.DefaultRuntimeConfig(),
-		}
-		if err := json.NewEncoder(w).Encode(execution); err != nil {
-			t.Fatal(err)
 		}
 	}))
 	defer server.Close()
@@ -239,6 +272,19 @@ func TestParseRunArgsSupportsResumeHistoryAndFallback(t *testing.T) {
 	}
 	if strings.Join(got.FallbackAgents, ",") != "gemini,claude" {
 		t.Fatalf("unexpected fallbacks: %#v", got.FallbackAgents)
+	}
+}
+
+func TestParseAgentExecArgsAllowsFlagsAfterPrompt(t *testing.T) {
+	got, err := parseAgentExecArgs([]string{"insert into session", "--resume", "last", "--dry-run", "--", "--no-alt-screen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Prompt != "insert into session" || got.ResumeSession != "last" || !got.DryRun {
+		t.Fatalf("unexpected exec options: %+v", got)
+	}
+	if strings.Join(got.ProviderArgs, " ") != "--no-alt-screen" {
+		t.Fatalf("unexpected provider args: %#v", got.ProviderArgs)
 	}
 }
 

@@ -247,7 +247,7 @@ Discover managed CLI agents on the daemon host.`)
   crux agent <name> usage
   crux agent <name> cost
   crux agent <name> sessions
-  crux agent <name> exec [--resume SESSION] [--send TEXT] [--expect TEXT]
+  crux agent <name> exec [PROMPT] [--resume SESSION] [--send TEXT] [--expect TEXT]
   crux agent <name> history
   crux agent <name> rm
 
@@ -292,7 +292,7 @@ View immutable execution history and replay/share edited context into another ag
 		}
 		if len(args) > 1 && args[1] == "exec" {
 			fmt.Fprintln(c.out, `Usage:
-  crux agent <name> exec [--resume SESSION] [--workdir DIR]
+  crux agent <name> exec [PROMPT] [--resume SESSION] [--workdir DIR]
                          [--send TEXT] [--expect TEXT]
                          [--driver auto|script|expect|direct]
                          [--timeout SECONDS] [--transcript PATH]
@@ -303,7 +303,7 @@ Open the provider TUI in a PTY, optionally drive input programmatically, capture
 		}
 		if len(args) > 1 && args[1] == "resume" {
 			fmt.Fprintln(c.out, `Usage:
-  crux agent <name> resume <session-id|last> <prompt> [--async] [--fallback AGENT[,AGENT]]
+  crux agent <name> resume <session-id|last> <prompt> [--fallback AGENT[,AGENT]]
 
 Resume a provider session through the agent's managed CLI adapter.`)
 			return true
@@ -339,10 +339,10 @@ Remove one agent.`)
 Inspect and operate one agent.`)
 	case "run":
 		fmt.Fprintln(c.out, `Usage:
-  crux run <agent> <prompt> [--async] [--resume SESSION] [--fallback AGENT[,AGENT]]
+  crux run <agent> <prompt> [--resume SESSION] [--fallback AGENT[,AGENT]]
   crux run <agent> --from EXECUTION_ID [--prompt TEXT] [--fallback AGENT[,AGENT]]
 
-Run an agent. --from replays Crux history into a new run without mutating history.`)
+Run an agent through the transcript-backed TTY exec path. --from replays Crux history into a new run without mutating history.`)
 	case "ps":
 		fmt.Fprintln(c.out, `Usage:
   crux ps [--agent NAME] [--status STATUS] [--last N]
@@ -1281,6 +1281,7 @@ func (c *CLI) agentHistory(ctx context.Context, opts rootOptions, cl *client.Cli
 
 type agentExecOptions struct {
 	ResumeSession  string
+	Prompt         string
 	WorkingDir     string
 	Driver         string
 	TimeoutSeconds int
@@ -1288,6 +1289,10 @@ type agentExecOptions struct {
 	Send           []string
 	Expect         []string
 	ProviderArgs   []string
+	Operation      string
+	SourceExecID   string
+	FallbackAgents []string
+	Quiet          bool
 	DryRun         bool
 	NoRecord       bool
 }
@@ -1300,47 +1305,22 @@ func (c *CLI) agentExec(ctx context.Context, opts rootOptions, cl *client.Client
 	if execOpts.WorkingDir == "" {
 		execOpts.WorkingDir = currentWorkingDir()
 	}
-	plan, err := cl.AgentExecPlan(ctx, name, cruxapi.AgentExecPlanRequest{
-		WorkingDir:    execOpts.WorkingDir,
-		ResumeSession: execOpts.ResumeSession,
-		Args:          execOpts.ProviderArgs,
-	})
-	if err != nil {
-		return agentLookupError(name, err)
+	if execOpts.Operation == "" {
+		execOpts.Operation = "exec"
 	}
+	plan, record, result, err := c.runTTYAgent(ctx, cl, name, &execOpts)
 	if execOpts.DryRun {
+		if err != nil {
+			return err
+		}
 		if opts.output != "table" {
 			return c.print(opts.output, plan)
 		}
 		printExecPlan(c.out, plan)
 		return nil
 	}
-	if execOpts.TranscriptPath == "" {
-		execOpts.TranscriptPath, err = defaultTTYTranscriptPath(plan.AgentName)
-		if err != nil {
-			return err
-		}
-	}
-	started := time.Now().UTC()
-	result := c.runTTYCommand(plan.Command, execOpts)
-	completed := time.Now().UTC()
-	transcript := ""
-	if execOpts.TranscriptPath != "" {
-		data, readErr := os.ReadFile(execOpts.TranscriptPath)
-		if readErr == nil {
-			transcript = string(data)
-		} else if result.Error == "" {
-			result.Error = readErr.Error()
-		}
-	}
-	if missing := missingExpectations(transcript, execOpts.Expect); len(missing) > 0 {
-		if result.Error != "" {
-			result.Error += "; "
-		}
-		result.Error += "missing expected TTY output: " + strings.Join(missing, ", ")
-		if result.ExitCode == 0 {
-			result.ExitCode = 1
-		}
+	if err != nil {
+		return err
 	}
 	if execOpts.NoRecord {
 		if opts.output != "table" {
@@ -1358,19 +1338,6 @@ func (c *CLI) agentExec(ctx context.Context, opts rootOptions, cl *client.Client
 		}
 		return nil
 	}
-	record, err := cl.RecordAgentExec(ctx, plan.AgentName, cruxapi.AgentExecRecordRequest{
-		WorkingDir:     plan.Command.WorkingDir,
-		ResumeSession:  execOpts.ResumeSession,
-		Args:           plan.Command.Args,
-		Driver:         result.Driver,
-		TranscriptPath: execOpts.TranscriptPath,
-		Transcript:     transcript,
-		Stderr:         result.Stderr,
-		Error:          result.Error,
-		ExitCode:       result.ExitCode,
-		StartedAt:      started,
-		CompletedAt:    completed,
-	})
 	if err != nil {
 		return err
 	}
@@ -1394,27 +1361,123 @@ func (c *CLI) agentExec(ctx context.Context, opts rootOptions, cl *client.Client
 	return nil
 }
 
+func (c *CLI) runTTYAgent(ctx context.Context, cl *client.Client, name string, execOpts *agentExecOptions) (cruxapi.AgentExecPlan, cruxapi.AgentExecRecordResponse, ttyExecResult, error) {
+	plan, err := cl.AgentExecPlan(ctx, name, cruxapi.AgentExecPlanRequest{
+		WorkingDir:    execOpts.WorkingDir,
+		ResumeSession: execOpts.ResumeSession,
+		Prompt:        execOpts.Prompt,
+		Input:         execOpts.Send,
+		Args:          execOpts.ProviderArgs,
+		Operation:     execOpts.Operation,
+	})
+	if err != nil {
+		return cruxapi.AgentExecPlan{}, cruxapi.AgentExecRecordResponse{}, ttyExecResult{}, agentLookupError(name, err)
+	}
+	execOpts.Send = append([]string{}, plan.Input...)
+	if execOpts.TranscriptPath == "" {
+		execOpts.TranscriptPath, err = defaultTTYTranscriptPath(plan.AgentName)
+		if err != nil {
+			return plan, cruxapi.AgentExecRecordResponse{}, ttyExecResult{}, err
+		}
+	}
+	if execOpts.DryRun {
+		return plan, cruxapi.AgentExecRecordResponse{}, ttyExecResult{}, nil
+	}
+	started := time.Now().UTC()
+	result := c.runTTYCommand(plan.Command, *execOpts)
+	completed := time.Now().UTC()
+	transcript := ""
+	if execOpts.TranscriptPath != "" {
+		data, readErr := os.ReadFile(execOpts.TranscriptPath)
+		if readErr == nil {
+			transcript = string(data)
+		} else if result.Error == "" {
+			result.Error = readErr.Error()
+		}
+	}
+	if missing := missingExpectations(transcript, execOpts.Expect); len(missing) > 0 {
+		if result.Error != "" {
+			result.Error += "; "
+		}
+		result.Error += "missing expected TTY output: " + strings.Join(missing, ", ")
+		if result.ExitCode == 0 {
+			result.ExitCode = 1
+		}
+	}
+	if execOpts.NoRecord {
+		return plan, cruxapi.AgentExecRecordResponse{}, result, nil
+	}
+	record, err := cl.RecordAgentExec(ctx, plan.AgentName, cruxapi.AgentExecRecordRequest{
+		WorkingDir:     plan.Command.WorkingDir,
+		ResumeSession:  execOpts.ResumeSession,
+		Prompt:         firstNonEmpty(execOpts.Prompt, plan.Prompt),
+		Operation:      firstNonEmpty(execOpts.Operation, plan.Operation),
+		SourceExecID:   execOpts.SourceExecID,
+		FallbackAgents: execOpts.FallbackAgents,
+		Args:           plan.Command.Args,
+		Driver:         result.Driver,
+		TranscriptPath: execOpts.TranscriptPath,
+		Transcript:     transcript,
+		Stderr:         result.Stderr,
+		Error:          result.Error,
+		ExitCode:       result.ExitCode,
+		StartedAt:      started,
+		CompletedAt:    completed,
+	})
+	if err != nil {
+		return plan, cruxapi.AgentExecRecordResponse{}, result, err
+	}
+	return plan, record, result, nil
+}
+
 func parseAgentExecArgs(args []string) (agentExecOptions, error) {
 	var out agentExecOptions
-	var sendFlags, expectFlags multiFlag
-	fs := flag.NewFlagSet("agent exec", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	fs.StringVar(&out.ResumeSession, "resume", "", "provider session id or last")
-	fs.StringVar(&out.WorkingDir, "workdir", "", "working directory")
-	fs.StringVar(&out.Driver, "driver", "auto", "auto, script, expect, or direct")
-	fs.IntVar(&out.TimeoutSeconds, "timeout", 0, "timeout seconds for scripted input mode")
-	fs.StringVar(&out.TranscriptPath, "transcript", "", "transcript path")
-	fs.BoolVar(&out.DryRun, "dry-run", false, "print the provider TTY command without running it")
-	fs.BoolVar(&out.NoRecord, "no-record", false, "do not import the transcript into Crux history")
-	fs.Var(&sendFlags, "send", "input text to send to the TTY; repeatable")
-	fs.Var(&sendFlags, "input", "alias for --send")
-	fs.Var(&expectFlags, "expect", "text expected in the TTY transcript; repeatable")
-	if err := fs.Parse(args); err != nil {
-		return out, err
+	front, providerArgs := splitProviderArgs(args)
+	out.ProviderArgs = append([]string{}, providerArgs...)
+	positionals := make([]string, 0)
+	out.Driver = "auto"
+	for i := 0; i < len(front); i++ {
+		arg := front[i]
+		switch {
+		case arg == "--resume" || arg == "--workdir" || arg == "--driver" || arg == "--timeout" || arg == "--transcript" || arg == "--send" || arg == "--input" || arg == "--expect":
+			i++
+			if i >= len(front) {
+				return out, fmt.Errorf("%s requires a value", arg)
+			}
+			if err := setAgentExecOption(&out, strings.TrimPrefix(arg, "--"), front[i]); err != nil {
+				return out, err
+			}
+		case strings.HasPrefix(arg, "--resume="):
+			out.ResumeSession = strings.TrimPrefix(arg, "--resume=")
+		case strings.HasPrefix(arg, "--workdir="):
+			out.WorkingDir = strings.TrimPrefix(arg, "--workdir=")
+		case strings.HasPrefix(arg, "--driver="):
+			out.Driver = strings.TrimPrefix(arg, "--driver=")
+		case strings.HasPrefix(arg, "--timeout="):
+			if err := setAgentExecOption(&out, "timeout", strings.TrimPrefix(arg, "--timeout=")); err != nil {
+				return out, err
+			}
+		case strings.HasPrefix(arg, "--transcript="):
+			out.TranscriptPath = strings.TrimPrefix(arg, "--transcript=")
+		case strings.HasPrefix(arg, "--send="):
+			out.Send = append(out.Send, strings.TrimPrefix(arg, "--send="))
+		case strings.HasPrefix(arg, "--input="):
+			out.Send = append(out.Send, strings.TrimPrefix(arg, "--input="))
+		case strings.HasPrefix(arg, "--expect="):
+			out.Expect = append(out.Expect, strings.TrimPrefix(arg, "--expect="))
+		case arg == "--dry-run":
+			out.DryRun = true
+		case arg == "--no-record":
+			out.NoRecord = true
+		case strings.HasPrefix(arg, "-"):
+			return out, fmt.Errorf("unknown exec flag %q", arg)
+		default:
+			positionals = append(positionals, arg)
+		}
 	}
-	out.Send = append([]string{}, sendFlags...)
-	out.Expect = append([]string{}, expectFlags...)
-	out.ProviderArgs = append([]string{}, fs.Args()...)
+	if len(positionals) > 0 {
+		out.Prompt = strings.Join(positionals, " ")
+	}
 	switch out.Driver {
 	case "auto", "script", "expect", "direct":
 	default:
@@ -1426,9 +1489,44 @@ func parseAgentExecArgs(args []string) (agentExecOptions, error) {
 	return out, nil
 }
 
+func setAgentExecOption(out *agentExecOptions, name, value string) error {
+	switch name {
+	case "resume":
+		out.ResumeSession = value
+	case "workdir":
+		out.WorkingDir = value
+	case "driver":
+		out.Driver = value
+	case "timeout":
+		seconds, err := strconv.Atoi(value)
+		if err != nil {
+			return fmt.Errorf("--timeout must be an integer")
+		}
+		out.TimeoutSeconds = seconds
+	case "transcript":
+		out.TranscriptPath = value
+	case "send", "input":
+		out.Send = append(out.Send, value)
+	case "expect":
+		out.Expect = append(out.Expect, value)
+	default:
+		return fmt.Errorf("unknown exec flag %q", "--"+name)
+	}
+	return nil
+}
+
+func splitProviderArgs(args []string) ([]string, []string) {
+	for i, arg := range args {
+		if arg == "--" {
+			return append([]string{}, args[:i]...), append([]string{}, args[i+1:]...)
+		}
+	}
+	return args, nil
+}
+
 func (c *CLI) agentResume(ctx context.Context, opts rootOptions, name string, args []string) error {
 	if len(args) < 2 {
-		return fmt.Errorf("usage: crux agent <name> resume <session-id|last> <prompt> [--async] [--fallback AGENT[,AGENT]]")
+		return fmt.Errorf("usage: crux agent <name> resume <session-id|last> <prompt> [--fallback AGENT[,AGENT]]")
 	}
 	runOpts, err := parseRunArgs(append([]string{name, "--resume", args[0]}, args[1:]...))
 	if err != nil {
@@ -1591,14 +1689,14 @@ func parseRunArgs(args []string) (runOptions, error) {
 		}
 	}
 	if len(positionals) == 0 {
-		return out, fmt.Errorf("usage: crux run <agent> <prompt> [--async] [--resume SESSION] [--fallback AGENT[,AGENT]]")
+		return out, fmt.Errorf("usage: crux run <agent> <prompt> [--resume SESSION] [--fallback AGENT[,AGENT]]")
 	}
 	out.AgentName = positionals[0]
 	if out.Prompt == "" && len(positionals) > 1 {
 		out.Prompt = strings.Join(positionals[1:], " ")
 	}
 	if out.Prompt == "" && out.SourceExecID == "" {
-		return out, fmt.Errorf("usage: crux run <agent> <prompt> [--async] [--resume SESSION] [--fallback AGENT[,AGENT]]")
+		return out, fmt.Errorf("usage: crux run <agent> <prompt> [--resume SESSION] [--fallback AGENT[,AGENT]]")
 	}
 	out.FallbackAgents = uniqueAgentNames(out.FallbackAgents)
 	return out, nil
@@ -1616,6 +1714,9 @@ type runChainResult struct {
 }
 
 func (c *CLI) executeRun(ctx context.Context, opts rootOptions, cl *client.Client, runOpts runOptions) error {
+	if runOpts.Async {
+		return fmt.Errorf("crux run now uses transcript-backed TTY execution and does not support --async")
+	}
 	if runOpts.SourceExecID != "" {
 		prompt, err := c.promptFromHistory(ctx, cl, runOpts.SourceExecID, runOpts.Prompt)
 		if err != nil {
@@ -1636,15 +1737,17 @@ func (c *CLI) executeRun(ctx context.Context, opts rootOptions, cl *client.Clien
 	var final cruxapi.Execution
 	var lastErr error
 	for _, agentName := range chain {
-		execution, err := cl.Run(ctx, cruxapi.SubmitExecutionRequest{
-			AgentName:      agentName,
+		execOpts := agentExecOptions{
 			Prompt:         runOpts.Prompt,
 			WorkingDir:     currentWorkingDir(),
 			ResumeSession:  runOpts.ResumeSession,
+			Operation:      "run",
 			SourceExecID:   runOpts.SourceExecID,
 			FallbackAgents: runOpts.FallbackAgents,
-			Wait:           !runOpts.Async,
-		})
+			Quiet:          opts.output != "table",
+		}
+		_, record, _, err := c.runTTYAgent(ctx, cl, agentName, &execOpts)
+		execution := record.Execution
 		attempt := runAttempt{Agent: agentName, Execution: execution}
 		if err != nil {
 			attempt.Error = err.Error()
@@ -1654,7 +1757,7 @@ func (c *CLI) executeRun(ctx context.Context, opts rootOptions, cl *client.Clien
 		}
 		attempts = append(attempts, attempt)
 		final = execution
-		if runOpts.Async || execution.Status == cruxapi.ExecutionSucceeded {
+		if execution.Status == cruxapi.ExecutionSucceeded {
 			break
 		}
 		lastErr = fmt.Errorf("execution %s failed: %s", execution.ID, execution.Error)
@@ -1664,24 +1767,13 @@ func (c *CLI) executeRun(ctx context.Context, opts rootOptions, cl *client.Clien
 		if err := c.print(opts.output, result); err != nil {
 			return err
 		}
-		if !runOpts.Async && final.Status != cruxapi.ExecutionSucceeded {
+		if final.Status != cruxapi.ExecutionSucceeded {
 			if lastErr != nil {
 				return lastErr
 			}
 			return fmt.Errorf("execution failed")
 		}
 		return nil
-	}
-	if runOpts.Async {
-		executions := make([]cruxapi.Execution, 0, len(attempts))
-		for _, attempt := range attempts {
-			executions = append(executions, attempt.Execution)
-		}
-		printExecutionTable(c.out, executions)
-		return nil
-	}
-	if final.Stdout != "" {
-		fmt.Fprint(c.out, final.Stdout)
 	}
 	if final.Stderr != "" {
 		fmt.Fprint(c.err, final.Stderr)
@@ -2363,9 +2455,9 @@ func (c *CLI) runScriptTTY(command cruxapi.CommandSpec, opts agentExecOptions) t
 	if strings.TrimSpace(command.WorkingDir) != "" {
 		cmd.Dir = command.WorkingDir
 	}
-	cmd.Stdout = c.out
+	cmd.Stdout = c.ttyStdout(opts)
 	var stderr strings.Builder
-	cmd.Stderr = io.MultiWriter(c.err, &stderr)
+	cmd.Stderr = io.MultiWriter(c.ttyStderr(opts), &stderr)
 	if len(opts.Send) > 0 {
 		cmd.Stdin = strings.NewReader(ttyInput(opts.Send))
 	} else {
@@ -2404,8 +2496,11 @@ func (c *CLI) runExpectTTY(command cruxapi.CommandSpec, opts agentExecOptions) t
 		cmd.Dir = command.WorkingDir
 	}
 	cmd.Stdout = c.out
+	if opts.Quiet {
+		cmd.Stdout = io.Discard
+	}
 	var stderr strings.Builder
-	cmd.Stderr = io.MultiWriter(c.err, &stderr)
+	cmd.Stderr = io.MultiWriter(c.ttyStderr(opts), &stderr)
 	cmd.Stdin = os.Stdin
 	err = cmd.Run()
 	return ttyResult("expect", err, stderr.String())
@@ -2433,13 +2528,13 @@ func (c *CLI) runDirectTTY(command cruxapi.CommandSpec, opts agentExecOptions, d
 	if strings.TrimSpace(command.WorkingDir) != "" {
 		cmd.Dir = command.WorkingDir
 	}
-	stdout := io.Writer(c.out)
+	stdout := c.ttyStdout(opts)
 	if transcript != nil {
-		stdout = io.MultiWriter(c.out, transcript)
+		stdout = io.MultiWriter(stdout, transcript)
 	}
 	cmd.Stdout = stdout
 	var stderr strings.Builder
-	stderrWriters := []io.Writer{c.err, &stderr}
+	stderrWriters := []io.Writer{c.ttyStderr(opts), &stderr}
 	if transcript != nil {
 		stderrWriters = append(stderrWriters, transcript)
 	}
@@ -2458,6 +2553,20 @@ func scriptSupportsCommand(scriptPath string) bool {
 	defer cancel()
 	out, err := exec.CommandContext(ctx, scriptPath, "--help").CombinedOutput()
 	return err == nil && strings.Contains(string(out), "--command")
+}
+
+func (c *CLI) ttyStdout(opts agentExecOptions) io.Writer {
+	if opts.Quiet {
+		return io.Discard
+	}
+	return c.out
+}
+
+func (c *CLI) ttyStderr(opts agentExecOptions) io.Writer {
+	if opts.Quiet {
+		return io.Discard
+	}
+	return c.err
 }
 
 func ttyCommandContext(opts agentExecOptions) (context.Context, context.CancelFunc) {
@@ -2615,6 +2724,15 @@ func printExecPlan(out io.Writer, plan cruxapi.AgentExecPlan) {
 	fmt.Fprintf(out, "Command: %s %s\n", plan.Command.Path, strings.Join(plan.Command.Args, " "))
 	if plan.Command.WorkingDir != "" {
 		fmt.Fprintf(out, "WorkingDir: %s\n", plan.Command.WorkingDir)
+	}
+	if plan.Prompt != "" {
+		fmt.Fprintf(out, "Prompt: %s\n", plan.Prompt)
+	}
+	if len(plan.Input) > 0 {
+		fmt.Fprintln(out, "Input:")
+		for _, input := range plan.Input {
+			fmt.Fprintf(out, "  %s\n", oneLine(input))
+		}
 	}
 	if len(plan.Command.Env) > 0 {
 		fmt.Fprintln(out, "Env:")
