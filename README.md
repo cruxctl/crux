@@ -13,6 +13,7 @@ V0.1 CLI responsibilities:
 - register and inspect command-backed agents;
 - discover managed CLI agents through `cruxd`;
 - submit executions and read traces/events;
+- read unified managed-agent usage, cost signals, provider sessions, Crux execution history, resume plans, and fallback settings;
 - update runtime config through `cruxd`;
 - install or update both `crux` and `cruxd` through explicit installer scripts.
 
@@ -35,6 +36,21 @@ curl -fsSL https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-c
 ```
 
 By default the CLI installer resolves the `cruxd` installer to a commit-pinned raw GitHub URL before running it, so branch-level raw cache cannot install a stale daemon. Set `CRUXD_INSTALL_REF` to test a different daemon branch, tag, or commit.
+
+Delete the local CLI binary without removing daemon state:
+
+```bash
+rm -f ~/.local/bin/crux
+```
+
+Delete the CLI and stop/remove the user daemon service:
+
+```bash
+rm -f ~/.local/bin/crux
+systemctl --user disable --now cruxd.service
+rm -f ~/.config/systemd/user/cruxd.service ~/.local/bin/cruxd
+systemctl --user daemon-reload
+```
 
 ### Windows
 
@@ -209,6 +225,9 @@ crux agents describe echo -o yaml
 crux agent echo
 crux agent echo describe
 crux agent claude usage
+crux agent claude cost
+crux agent gemini sessions
+crux agent codex fallback set gemini,claude
 crux agent claude usage -o json
 ```
 
@@ -230,6 +249,14 @@ crux agents rm echo
 crux agent echo rm
 ```
 
+Fleet monitoring:
+
+```bash
+crux agents usage
+crux agents cost
+crux agents sessions
+```
+
 Discover installed managed CLI agents on the daemon host:
 
 ```bash
@@ -246,6 +273,9 @@ Run an agent and wait for output:
 ```bash
 crux run echo "hello from crux"
 crux run echo "hello from crux" -o yaml
+crux run codex "explain this repo" --fallback gemini,claude
+crux run gemini --resume latest "continue with a shorter answer"
+crux run claude --from exec_abc123 --prompt "turn the previous answer into a checklist"
 ```
 
 Queue an execution asynchronously:
@@ -259,8 +289,21 @@ List executions:
 
 ```bash
 crux ps
+crux ps --agent gemini
+crux ps --status failed --last 5
 crux -o json ps
 ```
+
+View and share immutable Crux history:
+
+```bash
+crux agent gemini history
+crux agent gemini history show exec_abc123
+crux agent gemini history share exec_abc123 codex --prompt "review and improve this"
+crux agent claude resume last "continue the previous Claude session"
+```
+
+Cost views are evidence-based. Crux shows realtime local execution state, duration, output volume, and provider usage text when a managed CLI exposes it. It does not invent token or billing counters when the provider CLI has no stable noninteractive command.
 
 Show execution events:
 

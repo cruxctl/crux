@@ -121,6 +121,26 @@ func (c *Client) AgentUsage(ctx context.Context, name string) (cruxapi.AgentUsag
 	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/usage", nil, &out)
 }
 
+func (c *Client) AgentCapabilities(ctx context.Context, name string) (cruxapi.AgentCapabilities, error) {
+	var out cruxapi.AgentCapabilities
+	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/capabilities", nil, &out)
+}
+
+func (c *Client) AgentCost(ctx context.Context, name string) (cruxapi.AgentCostSnapshot, error) {
+	var out cruxapi.AgentCostSnapshot
+	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/cost", nil, &out)
+}
+
+func (c *Client) AgentSessions(ctx context.Context, name string) ([]cruxapi.AgentSession, error) {
+	var out []cruxapi.AgentSession
+	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/sessions", nil, &out)
+}
+
+func (c *Client) AgentHistory(ctx context.Context, name string) ([]cruxapi.AgentHistoryItem, error) {
+	var out []cruxapi.AgentHistoryItem
+	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/history", nil, &out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
 	if strings.TrimSpace(c.baseURL) == "" {
 		return fmt.Errorf("server URL is required")

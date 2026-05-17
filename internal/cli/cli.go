@@ -174,10 +174,10 @@ Commands:
   context            Manage CLI contexts
   config             Get or update runtime config
   discover           Discover managed CLI agents on daemon host
-  agents             Manage command-backed agents
-  agent              Inspect one agent
-  run                Run an agent
-  ps                 List executions
+  agents             Manage and monitor command-backed agents
+  agent              Inspect and operate one agent
+  run                Run an agent with resume, history, and fallback options
+  ps                 List executions with filters
   trace              Show events for an execution
   events             Show all daemon events`)
 }
@@ -238,11 +238,17 @@ Discover managed CLI agents on the daemon host.`)
   crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE]
   crux agents rm <name>
   crux agents describe <name>
+  crux agents usage
+  crux agents cost
+  crux agents sessions
   crux agent <name> describe
   crux agent <name> usage
+  crux agent <name> cost
+  crux agent <name> sessions
+  crux agent <name> history
   crux agent <name> rm
 
-Manage command-backed agents.`)
+Manage and monitor command-backed agents.`)
 	case "agent":
 		if len(args) > 1 && args[1] == "describe" {
 			fmt.Fprintln(c.out, `Usage:
@@ -258,6 +264,45 @@ Describe one agent.`)
 Show local execution usage metrics for one agent.`)
 			return true
 		}
+		if len(args) > 1 && args[1] == "cost" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> cost
+
+Show realtime local cost signals and provider usage evidence for one agent.`)
+			return true
+		}
+		if len(args) > 1 && args[1] == "sessions" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> sessions
+
+List provider sessions when exposed and Crux-owned execution history sessions.`)
+			return true
+		}
+		if len(args) > 1 && args[1] == "history" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> history [ls]
+  crux agent <name> history show <execution-id>
+  crux agent <name> history share <execution-id> <target-agent> [--prompt TEXT]
+
+View immutable execution history and replay/share edited context into another agent.`)
+			return true
+		}
+		if len(args) > 1 && args[1] == "resume" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> resume <session-id|last> <prompt> [--async] [--fallback AGENT[,AGENT]]
+
+Resume a provider session through the agent's managed CLI adapter.`)
+			return true
+		}
+		if len(args) > 1 && args[1] == "fallback" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> fallback
+  crux agent <name> fallback set <agent>[,<agent>...]
+  crux agent <name> fallback clear
+
+View or set fallback agents used by `+"`crux run`"+` when the primary agent fails.`)
+			return true
+		}
 		if len(args) > 1 && args[1] == "rm" {
 			fmt.Fprintln(c.out, `Usage:
   crux agent <name> rm
@@ -269,19 +314,25 @@ Remove one agent.`)
   crux agent <name>
   crux agent <name> describe
   crux agent <name> usage
+  crux agent <name> cost
+  crux agent <name> sessions
+  crux agent <name> history [ls|show|share]
+  crux agent <name> resume <session-id|last> <prompt>
+  crux agent <name> fallback [set|clear]
   crux agent <name> rm
 
-Inspect one agent.`)
+Inspect and operate one agent.`)
 	case "run":
 		fmt.Fprintln(c.out, `Usage:
-  crux run <agent> <prompt> [--async]
+  crux run <agent> <prompt> [--async] [--resume SESSION] [--fallback AGENT[,AGENT]]
+  crux run <agent> --from EXECUTION_ID [--prompt TEXT] [--fallback AGENT[,AGENT]]
 
-Run an agent.`)
+Run an agent. --from replays Crux history into a new run without mutating history.`)
 	case "ps":
 		fmt.Fprintln(c.out, `Usage:
-  crux ps
+  crux ps [--agent NAME] [--status STATUS] [--last N]
 
-List executions.`)
+List executions with optional filters.`)
 	case "trace":
 		fmt.Fprintln(c.out, `Usage:
   crux trace <execution-id|last>
@@ -340,6 +391,12 @@ func (c *CLI) agentsUsage(command string) bool {
 		fmt.Fprintln(c.out, "Usage:\n  crux agents rm <name>")
 	case "describe":
 		fmt.Fprintln(c.out, "Usage:\n  crux agents describe <name>")
+	case "usage":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents usage")
+	case "cost":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents cost")
+	case "sessions":
+		fmt.Fprintln(c.out, "Usage:\n  crux agents sessions")
 	default:
 		return false
 	}
@@ -895,6 +952,21 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 			return fmt.Errorf("usage: crux agents rm <name>")
 		}
 		return c.deleteAgent(ctx, opts, cl, args[1])
+	case "usage":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux agents usage")
+		}
+		return c.printFleetUsage(ctx, opts, cl)
+	case "cost":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux agents cost")
+		}
+		return c.printFleetCost(ctx, opts, cl)
+	case "sessions":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux agents sessions")
+		}
+		return c.printFleetSessions(ctx, opts, cl)
 	default:
 		return fmt.Errorf("unknown agents command %q", args[0])
 	}
@@ -914,21 +986,24 @@ func (c *CLI) agent(ctx context.Context, opts rootOptions, args []string) error 
 		c.commandUsage("agent", args[:2])
 		return nil
 	}
-	if len(args) > 2 {
-		return fmt.Errorf("usage: crux agent <name> [describe|usage|rm]")
-	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
 	}
 	action := "describe"
-	if len(args) == 2 {
+	if len(args) >= 2 {
 		action = args[1]
 	}
 	switch action {
 	case "describe":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: crux agent <name> describe")
+		}
 		return c.describeAgent(ctx, opts, cl, args[0])
 	case "usage":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: crux agent <name> usage")
+		}
 		usage, err := cl.AgentUsage(ctx, args[0])
 		if err != nil {
 			return agentLookupError(args[0], err)
@@ -937,11 +1012,45 @@ func (c *CLI) agent(ctx context.Context, opts rootOptions, args []string) error 
 			return c.print(opts.output, usage)
 		}
 		return c.printAgentUsage(usage)
+	case "cost":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: crux agent <name> cost")
+		}
+		cost, err := cl.AgentCost(ctx, args[0])
+		if err != nil {
+			return agentLookupError(args[0], err)
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, cost)
+		}
+		printCostTable(c.out, []cruxapi.AgentCostSnapshot{cost})
+	case "sessions":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: crux agent <name> sessions")
+		}
+		sessions, err := cl.AgentSessions(ctx, args[0])
+		if err != nil {
+			return agentLookupError(args[0], err)
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, sessions)
+		}
+		printSessionsTable(c.out, sessions)
+	case "history":
+		return c.agentHistory(ctx, opts, cl, args[0], args[2:])
+	case "resume":
+		return c.agentResume(ctx, opts, args[0], args[2:])
+	case "fallback":
+		return c.agentFallback(ctx, opts, cl, args[0], args[2:])
 	case "rm":
+		if len(args) > 2 {
+			return fmt.Errorf("usage: crux agent <name> rm")
+		}
 		return c.deleteAgent(ctx, opts, cl, args[0])
 	default:
-		return fmt.Errorf("unknown agent command %q; expected describe, usage, or rm", action)
+		return fmt.Errorf("unknown agent command %q; expected describe, usage, cost, sessions, history, resume, fallback, or rm", action)
 	}
+	return nil
 }
 
 func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client, args []string) error {
@@ -1026,6 +1135,190 @@ func (c *CLI) deleteAgent(ctx context.Context, opts rootOptions, cl *client.Clie
 	return nil
 }
 
+func (c *CLI) printFleetUsage(ctx context.Context, opts rootOptions, cl *client.Client) error {
+	agents, err := cl.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	rows := make([]cruxapi.AgentUsage, 0, len(agents))
+	for _, agent := range agents {
+		usage, err := cl.AgentUsage(ctx, agent.Name)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, usage)
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, rows)
+	}
+	fmt.Fprintf(c.out, "%-18s %-8s %-8s %-8s %-10s %-10s %-10s\n", "AGENT", "TOTAL", "OK", "FAILED", "RUNNING", "SUCCESS", "OUTPUT")
+	for _, usage := range rows {
+		fmt.Fprintf(c.out, "%-18s %-8d %-8d %-8d %-10d %-10.1f %-10d\n",
+			usage.AgentName, usage.ExecutionsTotal, usage.Succeeded, usage.Failed, usage.Running, usage.SuccessRate*100, usage.StdoutBytes+usage.StderrBytes)
+	}
+	return nil
+}
+
+func (c *CLI) printFleetCost(ctx context.Context, opts rootOptions, cl *client.Client) error {
+	agents, err := cl.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	rows := make([]cruxapi.AgentCostSnapshot, 0, len(agents))
+	for _, agent := range agents {
+		cost, err := cl.AgentCost(ctx, agent.Name)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, cost)
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, rows)
+	}
+	printCostTable(c.out, rows)
+	return nil
+}
+
+func (c *CLI) printFleetSessions(ctx context.Context, opts rootOptions, cl *client.Client) error {
+	agents, err := cl.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	rows := make([]cruxapi.AgentSession, 0)
+	for _, agent := range agents {
+		sessions, err := cl.AgentSessions(ctx, agent.Name)
+		if err != nil {
+			return err
+		}
+		rows = append(rows, sessions...)
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, rows)
+	}
+	printSessionsTable(c.out, rows)
+	return nil
+}
+
+func (c *CLI) agentHistory(ctx context.Context, opts rootOptions, cl *client.Client, name string, args []string) error {
+	if len(args) == 0 {
+		args = []string{"ls"}
+	}
+	switch args[0] {
+	case "ls":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux agent <name> history [ls]")
+		}
+		history, err := cl.AgentHistory(ctx, name)
+		if err != nil {
+			return agentLookupError(name, err)
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, history)
+		}
+		printHistoryTable(c.out, history)
+	case "show":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: crux agent <name> history show <execution-id>")
+		}
+		execution, err := cl.GetExecution(ctx, args[1])
+		if err != nil {
+			return err
+		}
+		if execution.AgentName != cruxapi.CleanAgentName(name) {
+			return fmt.Errorf("execution %s belongs to agent %q", execution.ID, execution.AgentName)
+		}
+		if opts.output != "table" {
+			return c.print(opts.output, execution)
+		}
+		printExecutionDetail(c.out, execution)
+	case "share":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: crux agent <name> history share <execution-id> <target-agent> [--prompt TEXT]")
+		}
+		runOpts := runOptions{
+			AgentName:    args[2],
+			SourceExecID: args[1],
+		}
+		for i := 3; i < len(args); i++ {
+			switch {
+			case args[i] == "--prompt" || args[i] == "--edit":
+				i++
+				if i >= len(args) {
+					return fmt.Errorf("%s requires text", args[i-1])
+				}
+				runOpts.Prompt = args[i]
+			case strings.HasPrefix(args[i], "--prompt="):
+				runOpts.Prompt = strings.TrimPrefix(args[i], "--prompt=")
+			case strings.HasPrefix(args[i], "--edit="):
+				runOpts.Prompt = strings.TrimPrefix(args[i], "--edit=")
+			default:
+				return fmt.Errorf("usage: crux agent <name> history share <execution-id> <target-agent> [--prompt TEXT]")
+			}
+		}
+		return c.executeRun(ctx, opts, cl, runOpts)
+	default:
+		return fmt.Errorf("unknown history command %q; expected ls, show, or share", args[0])
+	}
+	return nil
+}
+
+func (c *CLI) agentResume(ctx context.Context, opts rootOptions, name string, args []string) error {
+	if len(args) < 2 {
+		return fmt.Errorf("usage: crux agent <name> resume <session-id|last> <prompt> [--async] [--fallback AGENT[,AGENT]]")
+	}
+	runOpts, err := parseRunArgs(append([]string{name, "--resume", args[0]}, args[1:]...))
+	if err != nil {
+		return err
+	}
+	cl, _, err := c.client(opts)
+	if err != nil {
+		return err
+	}
+	return c.executeRun(ctx, opts, cl, runOpts)
+}
+
+func (c *CLI) agentFallback(ctx context.Context, opts rootOptions, cl *client.Client, name string, args []string) error {
+	agent, err := findAgent(ctx, cl, name)
+	if err != nil {
+		return err
+	}
+	if len(args) == 0 {
+		fallbacks := fallbackAgents(agent)
+		if opts.output != "table" {
+			return c.print(opts.output, struct {
+				AgentName string   `json:"agentName" yaml:"agentName"`
+				Fallbacks []string `json:"fallbacks" yaml:"fallbacks"`
+			}{AgentName: agent.Name, Fallbacks: fallbacks})
+		}
+		fmt.Fprintf(c.out, "Agent: %s\n", agent.Name)
+		fmt.Fprintf(c.out, "Fallbacks: %s\n", firstNonEmpty(strings.Join(fallbacks, ","), "-"))
+		return nil
+	}
+	switch args[0] {
+	case "set":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: crux agent <name> fallback set <agent>[,<agent>...]")
+		}
+		setFallbackAgents(&agent, splitCSV(args[1]))
+	case "clear":
+		if len(args) != 1 {
+			return fmt.Errorf("usage: crux agent <name> fallback clear")
+		}
+		setFallbackAgents(&agent, nil)
+	default:
+		return fmt.Errorf("unknown fallback command %q; expected set or clear", args[0])
+	}
+	saved, err := cl.UpsertAgent(ctx, agent)
+	if err != nil {
+		return err
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, saved)
+	}
+	fmt.Fprintf(c.out, "agent %q fallback set to %s\n", saved.Name, firstNonEmpty(strings.Join(fallbackAgents(saved), ","), "-"))
+	return nil
+}
+
 func findAgent(ctx context.Context, cl *client.Client, name string) (cruxapi.Agent, error) {
 	cleanName := cruxapi.CleanAgentName(name)
 	agents, err := cl.ListAgents(ctx)
@@ -1067,60 +1360,211 @@ func (c *CLI) discover(ctx context.Context, opts rootOptions, args []string) err
 }
 
 func (c *CLI) runExecution(ctx context.Context, opts rootOptions, args []string) error {
-	if len(args) < 2 {
-		return fmt.Errorf("usage: crux run <agent> <prompt> [--async]")
-	}
-	async := false
-	filtered := make([]string, 0, len(args))
-	for _, arg := range args {
-		if arg == "--async" {
-			async = true
-			continue
-		}
-		filtered = append(filtered, arg)
-	}
-	if len(filtered) < 2 {
-		return fmt.Errorf("usage: crux run <agent> <prompt> [--async]")
-	}
 	cl, _, err := c.client(opts)
 	if err != nil {
 		return err
 	}
-	execution, err := cl.Run(ctx, cruxapi.SubmitExecutionRequest{
-		AgentName:  filtered[0],
-		Prompt:     strings.Join(filtered[1:], " "),
-		WorkingDir: currentWorkingDir(),
-		Wait:       !async,
-	})
+	runOpts, err := parseRunArgs(args)
 	if err != nil {
-		return agentLookupError(filtered[0], err)
+		return err
 	}
-	if opts.output != "table" {
-		if err := c.print(opts.output, execution); err != nil {
+	return c.executeRun(ctx, opts, cl, runOpts)
+}
+
+type runOptions struct {
+	AgentName      string
+	Prompt         string
+	Async          bool
+	ResumeSession  string
+	SourceExecID   string
+	FallbackAgents []string
+}
+
+func parseRunArgs(args []string) (runOptions, error) {
+	var out runOptions
+	positionals := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--async":
+			out.Async = true
+		case arg == "--fallback":
+			i++
+			if i >= len(args) {
+				return out, fmt.Errorf("--fallback requires a value")
+			}
+			out.FallbackAgents = append(out.FallbackAgents, splitCSV(args[i])...)
+		case strings.HasPrefix(arg, "--fallback="):
+			out.FallbackAgents = append(out.FallbackAgents, splitCSV(strings.TrimPrefix(arg, "--fallback="))...)
+		case arg == "--resume":
+			i++
+			if i >= len(args) {
+				return out, fmt.Errorf("--resume requires a session id")
+			}
+			out.ResumeSession = args[i]
+		case strings.HasPrefix(arg, "--resume="):
+			out.ResumeSession = strings.TrimPrefix(arg, "--resume=")
+		case arg == "--from":
+			i++
+			if i >= len(args) {
+				return out, fmt.Errorf("--from requires an execution id")
+			}
+			out.SourceExecID = args[i]
+		case strings.HasPrefix(arg, "--from="):
+			out.SourceExecID = strings.TrimPrefix(arg, "--from=")
+		case arg == "--prompt" || arg == "--edit":
+			i++
+			if i >= len(args) {
+				return out, fmt.Errorf("%s requires text", arg)
+			}
+			out.Prompt = args[i]
+		case strings.HasPrefix(arg, "--prompt="):
+			out.Prompt = strings.TrimPrefix(arg, "--prompt=")
+		case strings.HasPrefix(arg, "--edit="):
+			out.Prompt = strings.TrimPrefix(arg, "--edit=")
+		default:
+			positionals = append(positionals, arg)
+		}
+	}
+	if len(positionals) == 0 {
+		return out, fmt.Errorf("usage: crux run <agent> <prompt> [--async] [--resume SESSION] [--fallback AGENT[,AGENT]]")
+	}
+	out.AgentName = positionals[0]
+	if out.Prompt == "" && len(positionals) > 1 {
+		out.Prompt = strings.Join(positionals[1:], " ")
+	}
+	if out.Prompt == "" && out.SourceExecID == "" {
+		return out, fmt.Errorf("usage: crux run <agent> <prompt> [--async] [--resume SESSION] [--fallback AGENT[,AGENT]]")
+	}
+	out.FallbackAgents = uniqueAgentNames(out.FallbackAgents)
+	return out, nil
+}
+
+type runAttempt struct {
+	Agent     string            `json:"agent" yaml:"agent"`
+	Execution cruxapi.Execution `json:"execution" yaml:"execution"`
+	Error     string            `json:"error,omitempty" yaml:"error,omitempty"`
+}
+
+type runChainResult struct {
+	Attempts []runAttempt      `json:"attempts" yaml:"attempts"`
+	Final    cruxapi.Execution `json:"final" yaml:"final"`
+}
+
+func (c *CLI) executeRun(ctx context.Context, opts rootOptions, cl *client.Client, runOpts runOptions) error {
+	if runOpts.SourceExecID != "" {
+		prompt, err := c.promptFromHistory(ctx, cl, runOpts.SourceExecID, runOpts.Prompt)
+		if err != nil {
 			return err
 		}
-		if !async && execution.Status != cruxapi.ExecutionSucceeded {
-			return fmt.Errorf("execution %s failed: %s", execution.ID, execution.Error)
+		runOpts.Prompt = prompt
+	}
+	if len(runOpts.FallbackAgents) == 0 {
+		agent, err := findAgent(ctx, cl, runOpts.AgentName)
+		if err == nil {
+			runOpts.FallbackAgents = fallbackAgents(agent)
+		}
+	}
+	chain := []string{cruxapi.CleanAgentName(runOpts.AgentName)}
+	chain = append(chain, runOpts.FallbackAgents...)
+	chain = uniqueAgentNames(chain)
+	attempts := make([]runAttempt, 0, len(chain))
+	var final cruxapi.Execution
+	var lastErr error
+	for _, agentName := range chain {
+		execution, err := cl.Run(ctx, cruxapi.SubmitExecutionRequest{
+			AgentName:      agentName,
+			Prompt:         runOpts.Prompt,
+			WorkingDir:     currentWorkingDir(),
+			ResumeSession:  runOpts.ResumeSession,
+			SourceExecID:   runOpts.SourceExecID,
+			FallbackAgents: runOpts.FallbackAgents,
+			Wait:           !runOpts.Async,
+		})
+		attempt := runAttempt{Agent: agentName, Execution: execution}
+		if err != nil {
+			attempt.Error = err.Error()
+			attempts = append(attempts, attempt)
+			lastErr = agentLookupError(agentName, err)
+			break
+		}
+		attempts = append(attempts, attempt)
+		final = execution
+		if runOpts.Async || execution.Status == cruxapi.ExecutionSucceeded {
+			break
+		}
+		lastErr = fmt.Errorf("execution %s failed: %s", execution.ID, execution.Error)
+	}
+	result := runChainResult{Attempts: attempts, Final: final}
+	if opts.output != "table" {
+		if err := c.print(opts.output, result); err != nil {
+			return err
+		}
+		if !runOpts.Async && final.Status != cruxapi.ExecutionSucceeded {
+			if lastErr != nil {
+				return lastErr
+			}
+			return fmt.Errorf("execution failed")
 		}
 		return nil
 	}
-	if async {
-		printExecutionTable(c.out, []cruxapi.Execution{execution})
+	if runOpts.Async {
+		executions := make([]cruxapi.Execution, 0, len(attempts))
+		for _, attempt := range attempts {
+			executions = append(executions, attempt.Execution)
+		}
+		printExecutionTable(c.out, executions)
 		return nil
 	}
-	fmt.Fprint(c.out, execution.Stdout)
-	if execution.Stderr != "" {
-		fmt.Fprint(c.err, execution.Stderr)
+	if final.Stdout != "" {
+		fmt.Fprint(c.out, final.Stdout)
 	}
-	if execution.Status != cruxapi.ExecutionSucceeded {
-		return fmt.Errorf("execution %s failed: %s", execution.ID, execution.Error)
+	if final.Stderr != "" {
+		fmt.Fprint(c.err, final.Stderr)
+	}
+	if final.Status != cruxapi.ExecutionSucceeded {
+		if lastErr != nil {
+			return lastErr
+		}
+		return fmt.Errorf("execution %s failed: %s", final.ID, final.Error)
+	}
+	if len(attempts) > 1 {
+		fmt.Fprintf(c.err, "crux fallback: succeeded with %s after %d attempts\n", final.AgentName, len(attempts))
 	}
 	return nil
 }
 
+func (c *CLI) promptFromHistory(ctx context.Context, cl *client.Client, executionID, override string) (string, error) {
+	source, err := cl.GetExecution(ctx, executionID)
+	if err != nil {
+		return "", err
+	}
+	task := strings.TrimSpace(override)
+	if task == "" {
+		task = source.Prompt
+	}
+	var builder strings.Builder
+	fmt.Fprintf(&builder, "Crux shared execution context from %s (%s).\n\n", source.ID, source.AgentName)
+	if strings.TrimSpace(source.Prompt) != "" {
+		fmt.Fprintf(&builder, "Original prompt:\n%s\n\n", source.Prompt)
+	}
+	if strings.TrimSpace(source.Stdout) != "" {
+		fmt.Fprintf(&builder, "Prior stdout:\n%s\n\n", source.Stdout)
+	}
+	if strings.TrimSpace(source.Stderr) != "" {
+		fmt.Fprintf(&builder, "Prior stderr:\n%s\n\n", source.Stderr)
+	}
+	if strings.TrimSpace(source.Error) != "" {
+		fmt.Fprintf(&builder, "Prior error:\n%s\n\n", source.Error)
+	}
+	fmt.Fprintf(&builder, "New task:\n%s", task)
+	return builder.String(), nil
+}
+
 func (c *CLI) ps(ctx context.Context, opts rootOptions, args []string) error {
-	if len(args) != 0 {
-		return fmt.Errorf("usage: crux ps")
+	filter, err := parsePSArgs(args)
+	if err != nil {
+		return err
 	}
 	cl, _, err := c.client(opts)
 	if err != nil {
@@ -1130,11 +1574,79 @@ func (c *CLI) ps(ctx context.Context, opts rootOptions, args []string) error {
 	if err != nil {
 		return err
 	}
+	executions = filterExecutions(executions, filter)
 	if opts.output != "table" {
 		return c.print(opts.output, executions)
 	}
 	printExecutionTable(c.out, executions)
 	return nil
+}
+
+type psFilter struct {
+	Agent  string
+	Status string
+	Last   int
+}
+
+func parsePSArgs(args []string) (psFilter, error) {
+	var filter psFilter
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--agent":
+			i++
+			if i >= len(args) {
+				return filter, fmt.Errorf("--agent requires a name")
+			}
+			filter.Agent = cruxapi.CleanAgentName(args[i])
+		case strings.HasPrefix(arg, "--agent="):
+			filter.Agent = cruxapi.CleanAgentName(strings.TrimPrefix(arg, "--agent="))
+		case arg == "--status":
+			i++
+			if i >= len(args) {
+				return filter, fmt.Errorf("--status requires a value")
+			}
+			filter.Status = strings.TrimSpace(args[i])
+		case strings.HasPrefix(arg, "--status="):
+			filter.Status = strings.TrimSpace(strings.TrimPrefix(arg, "--status="))
+		case arg == "--last":
+			i++
+			if i >= len(args) {
+				return filter, fmt.Errorf("--last requires a number")
+			}
+			value, err := strconv.Atoi(args[i])
+			if err != nil || value < 1 {
+				return filter, fmt.Errorf("--last must be a positive integer")
+			}
+			filter.Last = value
+		case strings.HasPrefix(arg, "--last="):
+			value, err := strconv.Atoi(strings.TrimPrefix(arg, "--last="))
+			if err != nil || value < 1 {
+				return filter, fmt.Errorf("--last must be a positive integer")
+			}
+			filter.Last = value
+		default:
+			return filter, fmt.Errorf("usage: crux ps [--agent NAME] [--status STATUS] [--last N]")
+		}
+	}
+	return filter, nil
+}
+
+func filterExecutions(executions []cruxapi.Execution, filter psFilter) []cruxapi.Execution {
+	out := make([]cruxapi.Execution, 0, len(executions))
+	for _, execution := range executions {
+		if filter.Agent != "" && execution.AgentName != filter.Agent {
+			continue
+		}
+		if filter.Status != "" && string(execution.Status) != filter.Status {
+			continue
+		}
+		out = append(out, execution)
+		if filter.Last > 0 && len(out) >= filter.Last {
+			break
+		}
+	}
+	return out
 }
 
 func (c *CLI) trace(ctx context.Context, opts rootOptions, args []string) error {
@@ -1321,6 +1833,74 @@ func (c *CLI) printAgentUsage(usage cruxapi.AgentUsage) error {
 	return nil
 }
 
+func printCostTable(out io.Writer, rows []cruxapi.AgentCostSnapshot) {
+	fmt.Fprintf(out, "%-18s %-8s %-8s %-8s %-10s %-10s %-10s %s\n", "AGENT", "PROVIDER", "TOTAL", "RUNNING", "SUCCESS", "DURATION", "OUTPUT", "PROVIDER")
+	for _, row := range rows {
+		provider := "unavailable"
+		if row.ProviderCostAvailable {
+			provider = oneLine(row.ProviderCostValue)
+		} else if row.ProviderCostDescription != "" {
+			provider = oneLine(row.ProviderCostDescription)
+		}
+		fmt.Fprintf(out, "%-18s %-8s %-8d %-8d %-10.1f %-10s %-10d %s\n",
+			row.AgentName, row.Provider, row.ExecutionsTotal, row.Running, row.SuccessRate*100,
+			formatSeconds(row.TotalDurationSeconds), row.StdoutBytes+row.StderrBytes, provider)
+	}
+}
+
+func printSessionsTable(out io.Writer, rows []cruxapi.AgentSession) {
+	fmt.Fprintf(out, "%-18s %-10s %-10s %-36s %-8s %s\n", "AGENT", "PROVIDER", "SOURCE", "ID", "RESUME", "TITLE")
+	for _, row := range rows {
+		resume := "no"
+		if row.ResumeSupported {
+			resume = "yes"
+		}
+		title := row.Title
+		if row.Age != "" {
+			title = title + " (" + row.Age + ")"
+		}
+		fmt.Fprintf(out, "%-18s %-10s %-10s %-36s %-8s %s\n",
+			row.AgentName, row.Provider, row.Source, row.ID, resume, oneLine(title))
+	}
+}
+
+func printHistoryTable(out io.Writer, rows []cruxapi.AgentHistoryItem) {
+	fmt.Fprintf(out, "%-28s %-18s %-10s %-5s %-20s %s\n", "ID", "AGENT", "STATUS", "EXIT", "QUEUED", "PROMPT")
+	for _, row := range rows {
+		fmt.Fprintf(out, "%-28s %-18s %-10s %-5d %-20s %s\n",
+			row.ID, row.AgentName, row.Status, row.ExitCode, row.QueuedAt.Format(time.RFC3339), oneLine(row.PromptPreview))
+	}
+}
+
+func printExecutionDetail(out io.Writer, execution cruxapi.Execution) {
+	fmt.Fprintf(out, "ID: %s\n", execution.ID)
+	fmt.Fprintf(out, "Agent: %s\n", execution.AgentName)
+	fmt.Fprintf(out, "Status: %s\n", execution.Status)
+	fmt.Fprintf(out, "Exit: %d\n", execution.ExitCode)
+	if execution.WorkingDir != "" {
+		fmt.Fprintf(out, "WorkingDir: %s\n", execution.WorkingDir)
+	}
+	if execution.ResumeSession != "" {
+		fmt.Fprintf(out, "ResumeSession: %s\n", execution.ResumeSession)
+	}
+	if execution.SourceExecID != "" {
+		fmt.Fprintf(out, "SourceExecution: %s\n", execution.SourceExecID)
+	}
+	fmt.Fprintf(out, "Queued: %s\n", execution.QueuedAt.Format(time.RFC3339))
+	if execution.Error != "" {
+		fmt.Fprintf(out, "Error: %s\n", execution.Error)
+	}
+	if execution.Prompt != "" {
+		fmt.Fprintf(out, "\nPrompt:\n%s\n", execution.Prompt)
+	}
+	if execution.Stdout != "" {
+		fmt.Fprintf(out, "\nStdout:\n%s\n", execution.Stdout)
+	}
+	if execution.Stderr != "" {
+		fmt.Fprintf(out, "\nStderr:\n%s\n", execution.Stderr)
+	}
+}
+
 func printAgentDetailTable(out io.Writer, agent cruxapi.Agent) {
 	fmt.Fprintf(out, "Name: %s\n", agent.Name)
 	fmt.Fprintf(out, "ID: %s\n", firstNonEmpty(agent.ID, "-"))
@@ -1479,6 +2059,58 @@ func currentWorkingDir() string {
 		return ""
 	}
 	return wd
+}
+
+const fallbackAgentsLabel = "cruxctl.io/fallback-agents"
+
+func fallbackAgents(agent cruxapi.Agent) []string {
+	if agent.Labels == nil {
+		return nil
+	}
+	return uniqueAgentNames(splitCSV(agent.Labels[fallbackAgentsLabel]))
+}
+
+func setFallbackAgents(agent *cruxapi.Agent, fallbacks []string) {
+	if agent.Labels == nil {
+		agent.Labels = map[string]string{}
+	}
+	values := uniqueAgentNames(fallbacks)
+	if len(values) == 0 {
+		delete(agent.Labels, fallbackAgentsLabel)
+		return
+	}
+	agent.Labels[fallbackAgentsLabel] = strings.Join(values, ",")
+}
+
+func splitCSV(value string) []string {
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == ' '
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		name := cruxapi.CleanAgentName(part)
+		if name != "" {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+func uniqueAgentNames(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		name := cruxapi.CleanAgentName(value)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 func oneLine(value string) string {

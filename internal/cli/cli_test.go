@@ -74,6 +74,12 @@ func TestRunSendsCurrentWorkingDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/agents" {
+			if err := json.NewEncoder(w).Encode([]cruxapi.Agent{{Name: "codex", Status: cruxapi.AgentReady}}); err != nil {
+				t.Fatal(err)
+			}
+			return
+		}
 		if r.URL.Path != "/v1/executions" {
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -158,5 +164,34 @@ func TestOutputFlagCanAppearBeforeCommandArgs(t *testing.T) {
 	}
 	if strings.Join(rest, " ") != "gemini hi" {
 		t.Fatalf("unexpected rest: %#v", rest)
+	}
+}
+
+func TestParseRunArgsSupportsResumeHistoryAndFallback(t *testing.T) {
+	got, err := parseRunArgs([]string{"codex", "--from", "exec_1", "--prompt", "revise", "--resume", "last", "--fallback", "gemini,claude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AgentName != "codex" || got.SourceExecID != "exec_1" || got.Prompt != "revise" || got.ResumeSession != "last" {
+		t.Fatalf("unexpected run options: %+v", got)
+	}
+	if strings.Join(got.FallbackAgents, ",") != "gemini,claude" {
+		t.Fatalf("unexpected fallbacks: %#v", got.FallbackAgents)
+	}
+}
+
+func TestFilterExecutions(t *testing.T) {
+	executions := []cruxapi.Execution{
+		{ID: "1", AgentName: "gemini", Status: cruxapi.ExecutionSucceeded},
+		{ID: "2", AgentName: "codex", Status: cruxapi.ExecutionFailed},
+		{ID: "3", AgentName: "codex", Status: cruxapi.ExecutionSucceeded},
+	}
+	got := filterExecutions(executions, psFilter{Agent: "codex", Last: 1})
+	if len(got) != 1 || got[0].ID != "2" {
+		t.Fatalf("unexpected filtered executions: %+v", got)
+	}
+	got = filterExecutions(executions, psFilter{Status: "succeeded"})
+	if len(got) != 2 {
+		t.Fatalf("expected two succeeded executions, got %+v", got)
 	}
 }
