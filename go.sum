@@ -1,5 +1,7 @@
 github.com/cruxctl/cruxd v0.0.0-20260516230453-c463b5e5e528 h1:poojXPVHC6QSYcf4AfiDyOlc+mAMAbNG6cHGHUN7RUc=
 github.com/cruxctl/cruxd v0.0.0-20260516230453-c463b5e5e528/go.mod h1:RYCDSxArWozywuNvRC1WxdBdkqLCI00VkD45y2d61YQ=
+github.com/cruxctl/cruxd v0.0.0-20260517104330-5cd31f6ea18d h1:S+tqn7sBEJBYYn6o0cDIOM5YIYjtBKI99gfCtWQvmck=
+github.com/cruxctl/cruxd v0.0.0-20260517104330-5cd31f6ea18d/go.mod h1:RYCDSxArWozywuNvRC1WxdBdkqLCI00VkD45y2d61YQ=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405/go.mod h1:Co6ibVJAznAaIkqp8huTwlJQCZ016jof/cbN4VW5Yz0=
 gopkg.in/yaml.v3 v3.0.1 h1:fxVm/GzAzEWqLHuvctI91KS9hhNmmWOoWu0XTYJS7CA=

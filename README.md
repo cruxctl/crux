@@ -2,7 +2,7 @@
 
 `crux` is the operator CLI for the Crux Control MVP. It talks to the daemon/server provided by [`cruxctl/cruxd`](https://github.com/cruxctl/cruxd).
 
-The CLI repository intentionally contains only the user-facing command, context config, API client, output formatting, and daemon bootstrap flow.
+The CLI repository intentionally contains only the user-facing command, context config, API client, output formatting, logging, and installer/update flow.
 
 ## Scope
 
@@ -14,11 +14,33 @@ V0.1 CLI responsibilities:
 - discover managed CLI agents through `cruxd`;
 - submit executions and read traces/events;
 - update runtime config through `cruxd`;
-- bootstrap daemon installation from the `cruxd` repo when `crux up` cannot find a running or installed daemon.
+- install or update both `crux` and `cruxd` through explicit installer scripts.
 
 Deferred: Kubernetes, Docker Compose, agentgateway, MCP proxying, model routing, OIDC, console UI, approvals, AgBOM, and SDK adapters.
 
 ## Install
+
+### Linux and macOS
+
+The all-in-one installer installs `cruxd` first, then installs the `crux` CLI:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.sh | sh
+```
+
+Force-refresh the local daemon binary and user service:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.sh | sh -s -- --force
+```
+
+### Windows
+
+PowerShell installs the current-user binaries and registers `cruxd` as a scheduled task:
+
+```powershell
+iwr https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.ps1 -UseB | iex
+```
 
 ### From Source
 
@@ -44,22 +66,24 @@ Make sure `$(go env GOPATH)/bin` is on `PATH`.
 
 ## Quick Start
 
-Run `crux up`. If `cruxd` is already online, it exits successfully. If `cruxd` is installed but offline, it starts `cruxd` in the foreground. If `cruxd` is missing, it prompts before downloading and running the daemon install script from the `cruxd` repo.
+Run `crux update` to install or update both the CLI and daemon. Use `--force` when you want to purge and reinstall the local `cruxd` binary and user service.
 
 ```bash
-crux up
+crux update
+crux update --force
 ```
 
-Non-interactive bootstrap:
+Non-interactive update:
 
 ```bash
-crux up --yes
+crux update --yes
 ```
 
-Use a custom install script URL for testing or pinned channels:
+Update only one component:
 
 ```bash
-crux up --yes --install-script-url https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh
+crux update --component crux
+crux update --component cruxd --force
 ```
 
 After the daemon is running:
@@ -89,6 +113,8 @@ Global flags:
 | `--server URL` | Override the active context's `cruxd` URL. |
 | `--api-key KEY` | Override the active context's API key. |
 | `-o, --output FMT` | Output format: `table`, `json`, or `yaml`. |
+| `--log-level LEVEL` | CLI log level: `debug`, `info`, `warn`, or `error`. |
+| `--log-file PATH` | Rotated CLI log file path. Use `none` to disable file logging. |
 
 Global flags must appear before the command:
 
@@ -107,22 +133,15 @@ crux help config set
 
 ### Lifecycle
 
-Ensure the daemon exists and is running:
+Install or update components:
 
 ```bash
-crux up
-crux up --yes
-crux up --no-start --yes
-crux up --install-script-url https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh
-```
-
-When a local `cruxd` binary is already installed but offline, `crux up` starts it in the foreground. These flags are passed through to `cruxd`:
-
-```bash
-crux up --daemon-config ~/.config/crux/cruxd.yaml
-crux up --address 127.0.0.1 --port 7790
-crux up --store /tmp/crux-state.json
-crux up --api-key local-dev-key
+crux update
+crux update --component crux
+crux update --component cruxd
+crux update --component cruxd --force
+crux update --version latest --yes
+crux update --no-start
 ```
 
 Check health and versions:
@@ -181,6 +200,7 @@ List and inspect registered agents:
 crux agents ls
 crux agents describe echo
 crux -o yaml agents describe echo
+crux agent claude usage
 ```
 
 Register a command-backed agent. If any argument contains `{prompt}`, `cruxd` replaces it with the run prompt; otherwise the prompt is sent to stdin.
@@ -244,15 +264,18 @@ crux events ls
 crux -o json events
 ```
 
-## Daemon Install Script
+## Install Scripts
 
-The default bootstrap script URL is:
+The default installer URLs are:
 
 ```text
+https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.sh
+https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.ps1
 https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.sh
+https://raw.githubusercontent.com/cruxctl/cruxd/main/scripts/install-cruxd.ps1
 ```
 
-The script is owned by `cruxctl/cruxd`, not this CLI repo.
+The `crux` installer calls the `cruxd` installer first unless `--skip-cruxd` is passed. Preview installers build native binaries with Go for Linux, macOS, and Windows on amd64 or arm64 hosts.
 
 ## Development
 

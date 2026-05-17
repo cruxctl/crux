@@ -7,18 +7,24 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
+	"sort"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/cruxctl/crux/internal/client"
 	"github.com/cruxctl/crux/internal/config"
+	"github.com/cruxctl/crux/internal/logging"
 	"github.com/cruxctl/cruxd/pkg/cruxapi"
 	"gopkg.in/yaml.v3"
 )
 
 type CLI struct {
-	out io.Writer
-	err io.Writer
+	out    io.Writer
+	err    io.Writer
+	logger *slog.Logger
 }
 
 type rootOptions struct {
@@ -27,6 +33,9 @@ type rootOptions struct {
 	serverURL  string
 	apiKey     string
 	output     string
+	logLevel   string
+	logFile    string
+	logFormat  string
 }
 
 type multiFlag []string
@@ -41,7 +50,7 @@ func (m *multiFlag) Set(value string) error {
 }
 
 func New(out, err io.Writer) *CLI {
-	return &CLI{out: out, err: err}
+	return &CLI{out: out, err: err, logger: slog.New(slog.NewTextHandler(io.Discard, nil))}
 }
 
 func (c *CLI) Run(ctx context.Context, args []string) int {
@@ -84,11 +93,18 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 		}
 		return 0
 	}
+	closeLogs, err := c.configureLogging(opts)
+	if err != nil {
+		fmt.Fprintln(c.err, err)
+		return 1
+	}
+	defer closeLogs()
+	c.logger.Info("command started", "command", cmd)
 
 	var runErr error
 	switch cmd {
-	case "up":
-		runErr = c.up(ctx, opts, rest)
+	case "update":
+		runErr = c.update(ctx, opts, rest)
 	case "doctor":
 		runErr = c.doctor(ctx, opts, rest)
 	case "version":
@@ -99,6 +115,8 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 		runErr = c.runtimeConfig(ctx, opts, rest)
 	case "agents":
 		runErr = c.agents(ctx, opts, rest)
+	case "agent":
+		runErr = c.agent(ctx, opts, rest)
 	case "discover":
 		runErr = c.discover(ctx, opts, rest)
 	case "run":
@@ -116,9 +134,11 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 		if errors.Is(runErr, flag.ErrHelp) {
 			return 0
 		}
+		c.logger.Error("command failed", "command", cmd, "error", runErr)
 		fmt.Fprintln(c.err, runErr)
 		return 1
 	}
+	c.logger.Info("command finished", "command", cmd)
 	return 0
 }
 
@@ -134,15 +154,18 @@ Global flags:
   --server URL       cruxd server URL override
   --api-key KEY      API key override
   -o, --output FMT   table, json, or yaml
+  --log-level LEVEL  debug, info, warn, or error
+  --log-file PATH    CLI log file override; "none" disables file logging
 
 Commands:
-  up                 Ensure cruxd is installed and running
+  update             Install or update crux and cruxd
   doctor             Check daemon health
   version            Print client and server version
   context            Manage CLI contexts
   config             Get or update runtime config
   discover           Discover managed CLI agents on daemon host
   agents             Manage command-backed agents
+  agent              Inspect one agent
   run                Run an agent
   ps                 List executions
   trace              Show events for an execution
@@ -151,13 +174,13 @@ Commands:
 
 func (c *CLI) commandUsage(command string, args []string) bool {
 	switch command {
-	case "up":
+	case "update":
 		fmt.Fprintln(c.out, `Usage:
-  crux up [--yes] [--no-start] [--install-script-url URL]
-          [--daemon-config PATH] [--address ADDR] [--port PORT]
-          [--store PATH] [--api-key KEY]
+  crux update [--component all|crux|cruxd] [--version VERSION]
+              [--crux-version VERSION] [--cruxd-version VERSION]
+              [--force|-f] [--yes|-y] [--no-start]
 
-Ensure cruxd is installed and running.`)
+Install or update crux and cruxd. --force purges and reinstalls the local cruxd binary and user service.`)
 	case "doctor":
 		fmt.Fprintln(c.out, `Usage:
   crux doctor
@@ -207,6 +230,18 @@ Discover managed CLI agents on the daemon host.`)
   crux agents describe <name>
 
 Manage command-backed agents.`)
+	case "agent":
+		if len(args) > 1 && args[1] == "usage" {
+			fmt.Fprintln(c.out, `Usage:
+  crux agent <name> usage
+
+Show local execution usage metrics for one agent.`)
+			return true
+		}
+		fmt.Fprintln(c.out, `Usage:
+  crux agent <name> usage
+
+Inspect one agent.`)
 	case "run":
 		fmt.Fprintln(c.out, `Usage:
   crux run <agent> <prompt> [--async]
@@ -290,7 +325,7 @@ func nestedHelpArg(command string, args []string) bool {
 		return false
 	}
 	switch command {
-	case "agents", "config", "context":
+	case "agent", "agents", "config", "context":
 		return true
 	default:
 		return false
@@ -307,6 +342,9 @@ func parseRoot(args []string) (rootOptions, string, []string, error) {
 	fs.StringVar(&opts.apiKey, "api-key", "", "API key")
 	fs.StringVar(&opts.output, "output", "table", "output format")
 	fs.StringVar(&opts.output, "o", "table", "output format")
+	fs.StringVar(&opts.logLevel, "log-level", "", "log level")
+	fs.StringVar(&opts.logFile, "log-file", "", "log file")
+	fs.StringVar(&opts.logFormat, "log-format", "", "log format")
 	if err := fs.Parse(args); err != nil {
 		return opts, "", nil, err
 	}
@@ -317,90 +355,98 @@ func parseRoot(args []string) (rootOptions, string, []string, error) {
 	return opts, remaining[0], remaining[1:], nil
 }
 
-func (c *CLI) up(ctx context.Context, opts rootOptions, args []string) error {
-	var daemonConfigPath, address, storePath, apiKey, installScriptURL string
-	var port int
-	var yes, noStart bool
-	fs := flag.NewFlagSet("up", flag.ContinueOnError)
+func (c *CLI) update(ctx context.Context, opts rootOptions, args []string) error {
+	var component, version, cruxVersion, cruxdVersion, cruxScriptURL, cruxPowerShellURL, cruxdScriptURL, cruxdPowerShellURL string
+	var yes, force, noStart bool
+	fs := flag.NewFlagSet("update", flag.ContinueOnError)
 	fs.SetOutput(c.err)
-	fs.StringVar(&daemonConfigPath, "daemon-config", "", "daemon config YAML path")
-	fs.StringVar(&address, "address", "", "listen address override")
-	fs.IntVar(&port, "port", 0, "listen port override")
-	fs.StringVar(&storePath, "store", "", "state store path override")
-	fs.StringVar(&apiKey, "api-key", "", "API key override")
-	fs.BoolVar(&yes, "yes", false, "download and install cruxd without prompting")
-	fs.BoolVar(&yes, "y", false, "download and install cruxd without prompting")
+	fs.StringVar(&component, "component", "all", "component to update: all, crux, or cruxd")
+	fs.StringVar(&version, "version", "latest", "version for both components")
+	fs.StringVar(&cruxVersion, "crux-version", "", "crux CLI version override")
+	fs.StringVar(&cruxdVersion, "cruxd-version", "", "cruxd version override")
+	fs.BoolVar(&yes, "yes", false, "run without prompting")
+	fs.BoolVar(&yes, "y", false, "run without prompting")
+	fs.BoolVar(&force, "force", false, "purge and reinstall cruxd binary and service")
+	fs.BoolVar(&force, "f", false, "purge and reinstall cruxd binary and service")
 	fs.BoolVar(&noStart, "no-start", false, "install cruxd but do not start it")
-	fs.StringVar(&installScriptURL, "install-script-url", defaultInstallScriptURL, "cruxd install script URL")
+	fs.StringVar(&cruxScriptURL, "crux-script-url", defaultCruxInstallScriptURL, "crux shell install script URL")
+	fs.StringVar(&cruxPowerShellURL, "crux-powershell-url", defaultCruxInstallPowerShellURL, "crux PowerShell install script URL")
+	fs.StringVar(&cruxdScriptURL, "cruxd-script-url", defaultCruxdInstallScriptURL, "cruxd shell install script URL")
+	fs.StringVar(&cruxdPowerShellURL, "cruxd-powershell-url", defaultCruxdInstallPowerShellURL, "cruxd PowerShell install script URL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-
+	if fs.NArg() != 0 {
+		return fmt.Errorf("usage: crux update [flags]")
+	}
+	component = strings.ToLower(strings.TrimSpace(component))
+	if component != "all" && component != "crux" && component != "cruxd" {
+		return fmt.Errorf("--component must be all, crux, or cruxd")
+	}
+	if cruxVersion == "" {
+		cruxVersion = version
+	}
+	if cruxdVersion == "" {
+		cruxdVersion = version
+	}
+	if force && !yes {
+		ok, err := c.confirm("Force reinstall will remove the local cruxd binary and user service before reinstalling. Continue?")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf("update declined")
+		}
+	}
+	env := map[string]string{
+		"CRUX_VERSION":  cruxVersion,
+		"CRUXD_VERSION": cruxdVersion,
+	}
+	installerArgs := []string{"--version", cruxVersion}
+	if noStart {
+		installerArgs = append(installerArgs, "--no-start")
+	}
+	if force {
+		installerArgs = append(installerArgs, "--force")
+	}
+	switch component {
+	case "all":
+		fmt.Fprintln(c.out, "updating crux and cruxd")
+		if err := c.runInstaller(ctx, cruxScriptURL, cruxPowerShellURL, installerArgs, env); err != nil {
+			return err
+		}
+	case "crux":
+		fmt.Fprintln(c.out, "updating crux")
+		args := append([]string{}, installerArgs...)
+		args = append(args, "--skip-cruxd")
+		if err := c.runInstaller(ctx, cruxScriptURL, cruxPowerShellURL, args, env); err != nil {
+			return err
+		}
+	case "cruxd":
+		fmt.Fprintln(c.out, "updating cruxd")
+		args := []string{"--version", cruxdVersion}
+		if noStart {
+			args = append(args, "--no-start")
+		}
+		if force {
+			args = append(args, "--force")
+		}
+		if err := c.runInstaller(ctx, cruxdScriptURL, cruxdPowerShellURL, args, env); err != nil {
+			return err
+		}
+	}
+	if noStart || component == "crux" {
+		return nil
+	}
 	cl, ctxCfg, err := c.client(opts)
 	if err != nil {
 		return err
 	}
-	healthCtx, cancel := context.WithTimeout(ctx, healthCheckTimeout)
-	err = cl.Health(healthCtx)
-	cancel()
-	if err == nil {
-		fmt.Fprintf(c.out, "cruxd: already running at %s\n", ctxCfg.ServerURL)
-		return nil
+	if err := waitForHealth(ctx, cl, postInstallHealthTimeout); err != nil {
+		return fmt.Errorf("cruxd was updated but did not become healthy at %s: %w", ctxCfg.ServerURL, err)
 	}
-
-	daemonPath, found := findCruxd()
-	if !found {
-		if !yes {
-			ok, err := c.confirm(fmt.Sprintf("cruxd is not installed or not on PATH. Download and run %s?", installScriptURL))
-			if err != nil {
-				return err
-			}
-			if !ok {
-				return fmt.Errorf("cruxd installation declined")
-			}
-		}
-		if err := c.installCruxd(ctx, installScriptURL); err != nil {
-			return err
-		}
-		if noStart {
-			fmt.Fprintln(c.out, "cruxd installed")
-			return nil
-		}
-		if err := waitForHealth(ctx, cl, postInstallHealthTimeout); err == nil {
-			fmt.Fprintf(c.out, "cruxd: installed and running at %s\n", ctxCfg.ServerURL)
-			return nil
-		}
-		daemonPath, found = findCruxd()
-		if !found {
-			return fmt.Errorf("cruxd install completed but no cruxd binary was found on PATH or ~/.local/bin")
-		}
-	}
-
-	if noStart {
-		return fmt.Errorf("cruxd is offline at %s", ctxCfg.ServerURL)
-	}
-	daemonArgs := buildCruxdArgs(daemonConfigPath, address, port, storePath, apiKey)
-	return c.execCruxd(ctx, daemonPath, daemonArgs)
-}
-
-func buildCruxdArgs(configPath, address string, port int, storePath, apiKey string) []string {
-	args := []string{}
-	if configPath != "" {
-		args = append(args, "--config", configPath)
-	}
-	if address != "" {
-		args = append(args, "--address", address)
-	}
-	if port != 0 {
-		args = append(args, "--port", fmt.Sprintf("%d", port))
-	}
-	if storePath != "" {
-		args = append(args, "--store", storePath)
-	}
-	if apiKey != "" {
-		args = append(args, "--api-key", apiKey)
-	}
-	return args
+	fmt.Fprintf(c.out, "cruxd: running at %s\n", ctxCfg.ServerURL)
+	return nil
 }
 
 func (c *CLI) doctor(ctx context.Context, opts rootOptions, args []string) error {
@@ -453,7 +499,13 @@ func (c *CLI) context(opts rootOptions, args []string) error {
 		if len(args) != 1 {
 			return fmt.Errorf("usage: crux context ls")
 		}
-		for name, ctx := range cfg.Contexts {
+		names := make([]string, 0, len(cfg.Contexts))
+		for name := range cfg.Contexts {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			ctx := cfg.Contexts[name]
 			marker := " "
 			if name == cfg.CurrentContext {
 				marker = "*"
@@ -636,6 +688,31 @@ func (c *CLI) agents(ctx context.Context, opts rootOptions, args []string) error
 	return nil
 }
 
+func (c *CLI) agent(ctx context.Context, opts rootOptions, args []string) error {
+	if len(args) == 0 || helpArg(args) {
+		return fmt.Errorf("usage: crux agent <name> usage")
+	}
+	if len(args) == 3 && (args[2] == "--help" || args[2] == "-h" || args[2] == "help") && args[1] == "usage" {
+		c.commandUsage("agent", []string{args[0], "usage"})
+		return nil
+	}
+	if len(args) != 2 || args[1] != "usage" {
+		return fmt.Errorf("usage: crux agent <name> usage")
+	}
+	cl, _, err := c.client(opts)
+	if err != nil {
+		return err
+	}
+	usage, err := cl.AgentUsage(ctx, args[0])
+	if err != nil {
+		return err
+	}
+	if opts.output != "table" {
+		return c.print(opts.output, usage)
+	}
+	return c.printAgentUsage(usage)
+}
+
 func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: crux agents add <name> --cmd PATH [--arg ARG] [--env KEY=VALUE]")
@@ -660,13 +737,17 @@ func (c *CLI) addAgent(ctx context.Context, opts rootOptions, cl *client.Client,
 	if cmdPath == "" {
 		return fmt.Errorf("--cmd is required")
 	}
+	env, err := parseEnv(envFlags)
+	if err != nil {
+		return err
+	}
 	agent := cruxapi.Agent{
 		Name:        args[0],
 		Description: description,
 		Command: cruxapi.CommandSpec{
 			Path:           cmdPath,
 			Args:           cmdArgs,
-			Env:            parseEnv(envFlags),
+			Env:            env,
 			WorkingDir:     workdir,
 			TimeoutSeconds: timeout,
 		},
@@ -761,9 +842,9 @@ func (c *CLI) ps(ctx context.Context, opts rootOptions, args []string) error {
 	if opts.output != "table" {
 		return c.print(opts.output, executions)
 	}
-	fmt.Fprintf(c.out, "%-29s %-18s %-10s %s\n", "ID", "AGENT", "STATUS", "QUEUED")
+	fmt.Fprintf(c.out, "%-29s %-18s %-10s %-10s %-6s %s\n", "ID", "AGENT", "STATUS", "DURATION", "EXIT", "QUEUED")
 	for _, execution := range executions {
-		fmt.Fprintf(c.out, "%-29s %-18s %-10s %s\n", execution.ID, execution.AgentName, execution.Status, execution.QueuedAt.Format("2006-01-02T15:04:05Z"))
+		fmt.Fprintf(c.out, "%-29s %-18s %-10s %-10s %-6d %s\n", execution.ID, execution.AgentName, execution.Status, executionDuration(execution), execution.ExitCode, execution.QueuedAt.Format(time.RFC3339))
 	}
 	return nil
 }
@@ -794,9 +875,7 @@ func (c *CLI) trace(ctx context.Context, opts rootOptions, args []string) error 
 	if opts.output != "table" {
 		return c.print(opts.output, events)
 	}
-	for _, event := range events {
-		fmt.Fprintf(c.out, "%s %-20s %s\n", event.CreatedAt.Format("15:04:05"), event.Type, event.Message)
-	}
+	printEventTable(c.out, events, false)
 	return nil
 }
 
@@ -815,13 +894,7 @@ func (c *CLI) events(ctx context.Context, opts rootOptions, args []string) error
 	if opts.output != "table" {
 		return c.print(opts.output, events)
 	}
-	for _, event := range events {
-		target := event.AgentName
-		if event.ExecutionID != "" {
-			target = event.ExecutionID
-		}
-		fmt.Fprintf(c.out, "%s %-29s %-22s %s\n", event.CreatedAt.Format("15:04:05"), target, event.Type, event.Message)
-	}
+	printEventTable(c.out, events, true)
 	return nil
 }
 
@@ -849,6 +922,21 @@ func (c *CLI) client(opts rootOptions) (*client.Client, config.CLIContext, error
 	return client.New(ctxCfg.ServerURL, ctxCfg.APIKey), ctxCfg, nil
 }
 
+func (c *CLI) configureLogging(opts rootOptions) (func() error, error) {
+	logger, closeFn, err := logging.New(logging.Options{
+		Level:      opts.logLevel,
+		File:       opts.logFile,
+		Format:     opts.logFormat,
+		MaxSizeMB:  10,
+		MaxBackups: 5,
+	})
+	if err != nil {
+		return nil, err
+	}
+	c.logger = logger
+	return closeFn, nil
+}
+
 func (c *CLI) print(format string, value any) error {
 	switch format {
 	case "", "table", "json":
@@ -869,19 +957,82 @@ func (c *CLI) print(format string, value any) error {
 	return nil
 }
 
-func parseEnv(values []string) map[string]string {
+func (c *CLI) printAgentUsage(usage cruxapi.AgentUsage) error {
+	fmt.Fprintf(c.out, "Agent: %s\n", usage.AgentName)
+	fmt.Fprintf(c.out, "Executions: total=%d succeeded=%d failed=%d running=%d queued=%d canceled=%d successRate=%.1f%%\n",
+		usage.ExecutionsTotal, usage.Succeeded, usage.Failed, usage.Running, usage.Queued, usage.Canceled, usage.SuccessRate*100)
+	fmt.Fprintf(c.out, "Output: stdoutBytes=%d stderrBytes=%d errors=%d\n", usage.StdoutBytes, usage.StderrBytes, usage.ErrorCount)
+	fmt.Fprintf(c.out, "Duration: total=%s average=%s max=%s\n",
+		formatSeconds(usage.TotalDurationSeconds), formatSeconds(usage.AverageDurationSeconds), formatSeconds(usage.MaxDurationSeconds))
+	if usage.LastExecutionID != "" {
+		queued := "-"
+		if usage.LastQueuedAt != nil {
+			queued = usage.LastQueuedAt.Format(time.RFC3339)
+		}
+		fmt.Fprintf(c.out, "Last: id=%s status=%s exit=%d queued=%s\n",
+			usage.LastExecutionID, usage.LastStatus, usage.LastExitCode, queued)
+		if usage.LastError != "" {
+			fmt.Fprintf(c.out, "LastError: %s\n", usage.LastError)
+		}
+	}
+	if len(usage.ExitCodes) > 0 {
+		fmt.Fprintln(c.out, "Exit codes:")
+		codes := make([]string, 0, len(usage.ExitCodes))
+		for code := range usage.ExitCodes {
+			codes = append(codes, code)
+		}
+		sort.Strings(codes)
+		for _, code := range codes {
+			count := usage.ExitCodes[code]
+			fmt.Fprintf(c.out, "  %s: %d\n", code, count)
+		}
+	}
+	if len(usage.EventCounts) > 0 {
+		fmt.Fprintln(c.out, "Events:")
+		eventTypes := make([]string, 0, len(usage.EventCounts))
+		for eventType := range usage.EventCounts {
+			eventTypes = append(eventTypes, string(eventType))
+		}
+		sort.Strings(eventTypes)
+		for _, eventType := range eventTypes {
+			count := usage.EventCounts[cruxapi.EventType(eventType)]
+			fmt.Fprintf(c.out, "  %s: %d\n", eventType, count)
+		}
+	}
+	if len(usage.ExternalMetrics) > 0 {
+		fmt.Fprintln(c.out, "External metrics:")
+		for _, metric := range usage.ExternalMetrics {
+			status := "not available"
+			if metric.Available {
+				status = firstNonEmpty(metric.Value, "available")
+			}
+			fmt.Fprintf(c.out, "  %s: %s", metric.Name, status)
+			if metric.Description != "" {
+				fmt.Fprintf(c.out, " - %s", metric.Description)
+			}
+			fmt.Fprintln(c.out)
+		}
+	}
+	for _, note := range usage.Notes {
+		fmt.Fprintf(c.out, "Note: %s\n", note)
+	}
+	return nil
+}
+
+func parseEnv(values []string) (map[string]string, error) {
 	if len(values) == 0 {
-		return nil
+		return nil, nil
 	}
 	env := map[string]string{}
 	for _, value := range values {
 		key, val, ok := strings.Cut(value, "=")
-		if !ok {
-			continue
+		key = strings.TrimSpace(key)
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid --env value %q; expected KEY=VALUE", value)
 		}
 		env[key] = val
 	}
-	return env
+	return env, nil
 }
 
 func flagWasSet(fs *flag.FlagSet, name string) bool {
@@ -899,4 +1050,63 @@ func firstNonEmpty(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func printEventTable(out io.Writer, events []cruxapi.Event, includeTarget bool) {
+	if includeTarget {
+		fmt.Fprintf(out, "%-20s %-29s %-18s %-24s %-8s %s\n", "TIME", "EXECUTION", "AGENT", "TYPE", "EXIT", "MESSAGE")
+	} else {
+		fmt.Fprintf(out, "%-20s %-18s %-24s %-8s %s\n", "TIME", "AGENT", "TYPE", "EXIT", "MESSAGE")
+	}
+	for _, event := range events {
+		exitCode := eventDataString(event, "exitCode")
+		if includeTarget {
+			fmt.Fprintf(out, "%-20s %-29s %-18s %-24s %-8s %s\n",
+				event.CreatedAt.Format(time.RFC3339), firstNonEmpty(event.ExecutionID, "-"), firstNonEmpty(event.AgentName, "-"), event.Type, firstNonEmpty(exitCode, "-"), event.Message)
+			continue
+		}
+		fmt.Fprintf(out, "%-20s %-18s %-24s %-8s %s\n",
+			event.CreatedAt.Format(time.RFC3339), firstNonEmpty(event.AgentName, "-"), event.Type, firstNonEmpty(exitCode, "-"), event.Message)
+	}
+}
+
+func eventDataString(event cruxapi.Event, key string) string {
+	if event.Data == nil {
+		return ""
+	}
+	value, ok := event.Data[key]
+	if !ok || value == nil {
+		return ""
+	}
+	switch typed := value.(type) {
+	case string:
+		return typed
+	case int:
+		return strconv.Itoa(typed)
+	case float64:
+		return strconv.Itoa(int(typed))
+	default:
+		return fmt.Sprint(typed)
+	}
+}
+
+func executionDuration(execution cruxapi.Execution) string {
+	if execution.StartedAt == nil {
+		return "-"
+	}
+	end := execution.UpdatedAt
+	if execution.CompletedAt != nil {
+		end = *execution.CompletedAt
+	}
+	if end.Before(*execution.StartedAt) {
+		return "-"
+	}
+	return end.Sub(*execution.StartedAt).Round(time.Millisecond).String()
+}
+
+func formatSeconds(seconds float64) string {
+	if seconds <= 0 {
+		return "0s"
+	}
+	return time.Duration(seconds * float64(time.Second)).Round(time.Millisecond).String()
 }

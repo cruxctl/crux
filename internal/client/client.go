@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -83,7 +84,7 @@ func (c *Client) UpsertAgent(ctx context.Context, agent cruxapi.Agent) (cruxapi.
 }
 
 func (c *Client) DeleteAgent(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodDelete, "/v1/agents/"+name, nil, nil)
+	return c.do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(name), nil, nil)
 }
 
 func (c *Client) Discover(ctx context.Context) ([]cruxapi.DiscoveryResult, error) {
@@ -103,19 +104,27 @@ func (c *Client) ListExecutions(ctx context.Context) ([]cruxapi.Execution, error
 
 func (c *Client) GetExecution(ctx context.Context, id string) (cruxapi.Execution, error) {
 	var out cruxapi.Execution
-	return out, c.do(ctx, http.MethodGet, "/v1/executions/"+id, nil, &out)
+	return out, c.do(ctx, http.MethodGet, "/v1/executions/"+url.PathEscape(id), nil, &out)
 }
 
 func (c *Client) Events(ctx context.Context, executionID string) ([]cruxapi.Event, error) {
 	path := "/v1/events"
 	if executionID != "" {
-		path = "/v1/executions/" + executionID + "/events"
+		path = "/v1/executions/" + url.PathEscape(executionID) + "/events"
 	}
 	var out []cruxapi.Event
 	return out, c.do(ctx, http.MethodGet, path, nil, &out)
 }
 
+func (c *Client) AgentUsage(ctx context.Context, name string) (cruxapi.AgentUsage, error) {
+	var out cruxapi.AgentUsage
+	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/usage", nil, &out)
+}
+
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {
+	if strings.TrimSpace(c.baseURL) == "" {
+		return fmt.Errorf("server URL is required")
+	}
 	var body io.Reader
 	if in != nil {
 		data, err := json.Marshal(in)
@@ -137,7 +146,7 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return fmt.Errorf("%s %s: %w", method, c.baseURL+path, err)
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(resp.Body)
@@ -152,6 +161,12 @@ func (c *Client) do(ctx context.Context, method, path string, in, out any) error
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(data, &parsed)
+		if parsed.Error.Code == "" {
+			parsed.Error.Code = resp.Status
+		}
+		if parsed.Error.Message == "" {
+			parsed.Error.Message = strings.TrimSpace(string(data))
+		}
 		return &APIError{StatusCode: resp.StatusCode, Code: parsed.Error.Code, Message: parsed.Error.Message}
 	}
 	if out == nil || len(data) == 0 {
