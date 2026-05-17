@@ -38,6 +38,7 @@ New-Item -ItemType Directory -Force -Path $Tmp | Out-Null
 try {
     Write-Host "Installing crux from $Repo@$Version"
     $env:GOBIN = $Tmp
+    if (-not $env:GOPROXY) { $env:GOPROXY = "direct" }
     go install "$Repo/cmd/crux@$Version"
     Copy-Item -Force (Join-Path $Tmp "crux.exe") (Join-Path $BinDir "crux.exe")
 } finally {
@@ -56,4 +57,3 @@ contexts:
 }
 
 Write-Host "crux installed at $(Join-Path $BinDir "crux.exe")"
-

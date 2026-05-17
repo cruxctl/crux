@@ -80,7 +80,7 @@ cleanup() {
 trap cleanup EXIT
 
 echo "Installing crux from $REPO@$VERSION"
-GOBIN="$tmp_bin" go install "$REPO/cmd/crux@$VERSION"
+GOPROXY="${GOPROXY:-direct}" GOBIN="$tmp_bin" go install "$REPO/cmd/crux@$VERSION"
 install -m 755 "$tmp_bin/crux" "$BIN_DIR/crux"
 
 if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
@@ -94,4 +94,3 @@ EOF
 fi
 
 echo "crux installed at $BIN_DIR/crux"
-
