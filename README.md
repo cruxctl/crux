@@ -13,7 +13,7 @@ V0.1 CLI responsibilities:
 - register and inspect command-backed agents;
 - discover managed CLI agents through `cruxd`;
 - submit executions and read traces/events;
-- read unified managed-agent usage, cost signals, provider sessions, Crux execution history, resume plans, and fallback settings;
+- read unified managed-agent usage, cost signals, external provider sessions, Crux execution history, resume plans, and fallback settings;
 - update runtime config through `cruxd`;
 - install or update both `crux` and `cruxd` through explicit installer scripts.
 
@@ -226,12 +226,16 @@ crux agent echo
 crux agent echo describe
 crux agent claude usage
 crux agent claude cost
+crux agent claude sessions
 crux agent gemini sessions
+crux agent codex sessions -o json
 crux agent codex fallback set gemini,claude
 crux agent claude usage -o json
 ```
 
 `crux run` sends the current working directory to `cruxd` with the execution request. The daemon uses that directory unless the registered agent has an explicit `--workdir`, so managed CLIs keep the same project context the operator used at the shell.
+
+Managed-agent session lists include sessions created directly in the provider CLI outside Crux when a stable CLI option or local provider store exposes a resumable ID. Claude sessions are read from the local Claude Code project store, Codex sessions from `$CODEX_HOME/sessions` or `~/.codex/sessions`, Gemini sessions through `gemini --list-sessions`, and Kimi sessions from `$KIMI_SHARE_DIR/sessions` or `~/.kimi/sessions`. When Crux knows the original session working directory, resume runs use it automatically.
 
 Register a command-backed agent. If any argument contains `{prompt}`, `cruxd` replaces it with the run prompt; otherwise the prompt is sent to stdin.
 
@@ -275,6 +279,7 @@ crux run echo "hello from crux"
 crux run echo "hello from crux" -o yaml
 crux run codex "explain this repo" --fallback gemini,claude
 crux run gemini --resume latest "continue with a shorter answer"
+crux run codex --resume 019e3715-cdcc-78a2-bc76-a40edfb67fdc "continue this outside-Crux session"
 crux run claude --from exec_abc123 --prompt "turn the previous answer into a checklist"
 ```
 
@@ -301,6 +306,7 @@ crux agent gemini history
 crux agent gemini history show exec_abc123
 crux agent gemini history share exec_abc123 codex --prompt "review and improve this"
 crux agent claude resume last "continue the previous Claude session"
+crux agent kimi resume 567cbc06-5586-4110-bb57-6cb6c16ce761 "continue this Kimi session from Crux"
 ```
 
 Cost views are evidence-based. Crux shows realtime local execution state, duration, output volume, and provider usage text when a managed CLI exposes it. It does not invent token or billing counters when the provider CLI has no stable noninteractive command.

@@ -1849,7 +1849,7 @@ func printCostTable(out io.Writer, rows []cruxapi.AgentCostSnapshot) {
 }
 
 func printSessionsTable(out io.Writer, rows []cruxapi.AgentSession) {
-	fmt.Fprintf(out, "%-18s %-10s %-10s %-36s %-8s %s\n", "AGENT", "PROVIDER", "SOURCE", "ID", "RESUME", "TITLE")
+	fmt.Fprintf(out, "%-18s %-10s %-10s %-36s %-8s %-36s %s\n", "AGENT", "PROVIDER", "SOURCE", "ID", "RESUME", "WORKDIR", "TITLE")
 	for _, row := range rows {
 		resume := "no"
 		if row.ResumeSupported {
@@ -1859,8 +1859,8 @@ func printSessionsTable(out io.Writer, rows []cruxapi.AgentSession) {
 		if row.Age != "" {
 			title = title + " (" + row.Age + ")"
 		}
-		fmt.Fprintf(out, "%-18s %-10s %-10s %-36s %-8s %s\n",
-			row.AgentName, row.Provider, row.Source, row.ID, resume, oneLine(title))
+		fmt.Fprintf(out, "%-18s %-10s %-10s %-36s %-8s %-36s %s\n",
+			row.AgentName, row.Provider, row.Source, row.ID, resume, compactPath(row.WorkingDir), oneLine(title))
 	}
 }
 
@@ -2121,4 +2121,20 @@ func oneLine(value string) string {
 		return value[:240] + "...(truncated)"
 	}
 	return value
+}
+
+func compactPath(value string) string {
+	value = oneLine(value)
+	if value == "" {
+		return "-"
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if strings.HasPrefix(value, home) {
+			value = "~" + strings.TrimPrefix(value, home)
+		}
+	}
+	if len(value) <= 36 {
+		return value
+	}
+	return "..." + value[len(value)-33:]
 }
