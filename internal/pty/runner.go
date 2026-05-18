@@ -109,7 +109,7 @@ func (r *Runner) runProbe(ctx context.Context, terminal *PTYTerminal, task PTYTa
 		return probeResult(task, started, raw.Bytes(), "failed", err, 1, r.normalizer)
 	}
 	if task.Input != "" {
-		if _, err := io.WriteString(terminal, task.Input); err != nil {
+		if _, err := io.WriteString(terminal, normalizeProbeInput(task.Input)); err != nil {
 			_ = terminal.Kill()
 			return probeResult(task, started, raw.Bytes(), "failed", err, 1, r.normalizer)
 		}
@@ -143,10 +143,10 @@ func waitReady(ctx context.Context, spec MatcherSpec, chunks <-chan []byte, raw 
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-deadline.C:
-			return nil
+			return fmt.Errorf("pty ready matcher %q did not match before input", spec.Strategy)
 		case chunk, ok := <-chunks:
 			if !ok {
-				return nil
+				return fmt.Errorf("pty output closed before ready matcher %q matched", spec.Strategy)
 			}
 			raw.Write(chunk)
 		}
@@ -154,15 +154,22 @@ func waitReady(ctx context.Context, spec MatcherSpec, chunks <-chan []byte, raw 
 }
 
 func waitProbeDone(ctx context.Context, spec MatcherSpec, chunks <-chan []byte, waitDone <-chan error, raw *bytes.Buffer) error {
+	strategy := strings.TrimSpace(spec.Strategy)
 	stableFor := StableDuration(spec, 800*time.Millisecond)
-	if strings.TrimSpace(spec.Strategy) == "" {
+	if strategy == "" {
 		stableFor = 500 * time.Millisecond
 	}
+	waitForProcessExit := strategy == "process_exit"
+	stabilityCompletes := strategy == "" || strategy == "screen_stable" || strategy == "silence_for_duration"
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	lastLen := raw.Len()
+	sawOutput := false
 	lastChange := time.Now()
 	for {
+		if doneMatcherMatched(spec, raw.String()) {
+			return nil
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
@@ -173,14 +180,30 @@ func waitProbeDone(ctx context.Context, spec MatcherSpec, chunks <-chan []byte, 
 				raw.Write(chunk)
 				if raw.Len() != lastLen {
 					lastLen = raw.Len()
+					sawOutput = true
 					lastChange = time.Now()
 				}
 			}
 		case <-ticker.C:
-			if time.Since(lastChange) >= stableFor {
+			if sawOutput && stabilityCompletes && !waitForProcessExit && time.Since(lastChange) >= stableFor {
 				return nil
 			}
 		}
+	}
+}
+
+func normalizeProbeInput(input string) string {
+	input = strings.ReplaceAll(input, "\r\n", "\n")
+	input = strings.ReplaceAll(input, "\r", "\n")
+	return strings.ReplaceAll(input, "\n", "\r")
+}
+
+func doneMatcherMatched(spec MatcherSpec, screen string) bool {
+	switch strings.TrimSpace(spec.Strategy) {
+	case "screen_contains_any", "screen_contains", "regex":
+		return Match(spec, screen)
+	default:
+		return false
 	}
 }
 

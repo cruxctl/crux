@@ -12,7 +12,7 @@ detect:
   args: ["--version"]
 launch:
   command: codex
-  args: []
+  args: ["--no-alt-screen"]
 ready:
   strategy: screen_contains_any
   patterns:
@@ -33,23 +33,31 @@ normalize:
   collapse_redraws: true
 commands:
   describe:
-    input: "/help\n"
-    timeout: 20s
+    command: codex
+    args: ["-h"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   usage:
-    input: "/status\n"
-    timeout: 20s
+    command: codex
+    args: ["login", "status"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   conversations_ls:
-    input: "/resume\n"
-    timeout: 20s
-    parse_from: final_screen
+    display: "filesystem scan ~/.codex/sessions"
+    command: sh
+    args:
+      - "-c"
+      - |
+        if [ -d "$HOME/.codex/sessions" ]; then
+          find "$HOME/.codex/sessions" -type f -name '*.jsonl' -printf '%TY-%Tm-%Td %TH:%TM %f %p\n' | sort -r | head -50
+        else
+          echo "No Codex conversations found"
+        fi
+    timeout: 10s
+    parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit

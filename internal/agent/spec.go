@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"io/fs"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -19,7 +20,12 @@ type CommandSpec struct {
 }
 
 type CommandProbe struct {
+	Display      string          `json:"display,omitempty" yaml:"display,omitempty"`
+	Command      string          `json:"command,omitempty" yaml:"command,omitempty"`
+	Args         []string        `json:"args,omitempty" yaml:"args,omitempty"`
+	WorkDir      string          `json:"workDir,omitempty" yaml:"work_dir,omitempty"`
 	Input        string          `json:"input,omitempty" yaml:"input,omitempty"`
+	Ready        pty.MatcherSpec `json:"ready,omitempty" yaml:"ready,omitempty"`
 	Timeout      string          `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	ParseFrom    string          `json:"parseFrom,omitempty" yaml:"parse_from,omitempty"`
 	CompleteWhen pty.MatcherSpec `json:"completeWhen,omitempty" yaml:"complete_when,omitempty"`
@@ -138,6 +144,33 @@ func ProbeTimeout(probe CommandProbe, fallback time.Duration) time.Duration {
 		return fallback
 	}
 	return parsed
+}
+
+func ResolveCommand(command string, specBinary string, binaryPath string, workDir string) string {
+	command = strings.TrimSpace(ExpandValue(command, binaryPath, workDir))
+	if command == "" || command == specBinary {
+		return binaryPath
+	}
+	return command
+}
+
+func ExpandArgs(args []string, binaryPath string, workDir string) []string {
+	out := make([]string, 0, len(args))
+	for _, arg := range args {
+		out = append(out, ExpandValue(arg, binaryPath, workDir))
+	}
+	return out
+}
+
+func ExpandValue(value string, binaryPath string, workDir string) string {
+	home, _ := os.UserHomeDir()
+	replacer := strings.NewReplacer(
+		"{binary}", binaryPath,
+		"{workdir}", workDir,
+		"{cwd}", workDir,
+		"{home}", home,
+	)
+	return replacer.Replace(value)
 }
 
 func CleanName(value string) string {

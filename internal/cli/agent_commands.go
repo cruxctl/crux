@@ -239,10 +239,13 @@ func (c *CLI) execPTYAgent(ctx context.Context, opts rootOptions, store agent.St
 		return err
 	}
 	sessionID := newSessionID()
-	command := spec.Launch.Command
-	if command == "" || command == spec.Binary {
-		command = state.BinaryPath
+	workDir := execOpts.WorkDir
+	if workDir == "" {
+		workDir = currentWorkingDir()
 	}
+	command := agent.ResolveCommand(spec.Launch.Command, spec.Binary, state.BinaryPath, workDir)
+	providerArgs := agent.ExpandArgs(spec.Launch.Args, state.BinaryPath, workDir)
+	providerArgs = append(providerArgs, execOpts.ProviderArgs...)
 	stdout := c.out
 	if opts.output != "table" {
 		stdout = c.err
@@ -251,8 +254,8 @@ func (c *CLI) execPTYAgent(ctx context.Context, opts rootOptions, store agent.St
 		AgentName:   spec.ID,
 		Purpose:     "exec",
 		Command:     command,
-		Args:        append(append([]string{}, spec.Launch.Args...), execOpts.ProviderArgs...),
-		WorkDir:     execOpts.WorkDir,
+		Args:        providerArgs,
+		WorkDir:     workDir,
 		Env:         execEnv(spec),
 		Normalize:   spec.Normalize,
 		Timeout:     execOpts.Timeout,
@@ -260,9 +263,6 @@ func (c *CLI) execPTYAgent(ctx context.Context, opts rootOptions, store agent.St
 		Stdin:       os.Stdin,
 		Stdout:      stdout,
 		Stderr:      c.err,
-	}
-	if task.WorkDir == "" {
-		task.WorkDir = currentWorkingDir()
 	}
 	result, err := pty.NewRunner(pty.NewFactory(), pty.NewNormalizer()).Run(ctx, task)
 	if err != nil {
@@ -399,11 +399,16 @@ func printAgentDescription(out io.Writer, state agent.AgentState, spec agent.Spe
 	}
 	commands := spec.KnownCommands()
 	if len(commands) > 0 {
-		fmt.Fprintln(out, "Known TUI commands:")
+		fmt.Fprintln(out, "Known probes:")
 		for _, name := range commands {
 			probe := spec.Commands[name]
 			fmt.Fprintf(out, "- %s", strings.ReplaceAll(name, "_", " "))
-			if strings.TrimSpace(probe.Input) != "" {
+			switch {
+			case strings.TrimSpace(probe.Display) != "":
+				fmt.Fprintf(out, " (%s)", oneLine(probe.Display))
+			case strings.TrimSpace(probe.Command) != "":
+				fmt.Fprintf(out, " (%s)", compactPathWidth(strings.TrimSpace(probe.Command+" "+strings.Join(probe.Args, " ")), 72))
+			case strings.TrimSpace(probe.Input) != "":
 				fmt.Fprintf(out, " (%s)", oneLine(probe.Input))
 			}
 			fmt.Fprintln(out)
@@ -420,7 +425,7 @@ func printAgentDescription(out io.Writer, state agent.AgentState, spec agent.Spe
 func printProbeResult(out io.Writer, result agent.ProbeResult) {
 	fmt.Fprintf(out, "Agent: %s\n", result.AgentName)
 	fmt.Fprintf(out, "Probe: %s\n", result.ProbeName)
-	fmt.Fprintf(out, "Usage source: PTY probe\n")
+	fmt.Fprintf(out, "Probe source: PTY probe\n")
 	fmt.Fprintf(out, "Last updated: %s\n", result.EndedAt.Format(time.RFC3339))
 	fmt.Fprintf(out, "Confidence: %s\n", firstNonEmpty(result.Confidence, "low"))
 	if len(result.Parsed) > 0 {

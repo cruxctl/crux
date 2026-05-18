@@ -41,18 +41,14 @@ func Discover(ctx context.Context, specs []Spec, runner pty.PTYRunner) ([]Discov
 }
 
 func detectVersion(ctx context.Context, spec Spec, path string, runner pty.PTYRunner) string {
-	command := spec.Detect.Command
-	if command == "" || command == spec.Binary {
-		command = path
-	}
 	if runner == nil {
 		return ""
 	}
 	result, err := runner.Run(ctx, pty.PTYTask{
 		AgentName:     spec.ID,
 		Purpose:       "detect",
-		Command:       command,
-		Args:          spec.Detect.Args,
+		Command:       ResolveCommand(spec.Detect.Command, spec.Binary, path, ""),
+		Args:          ExpandArgs(spec.Detect.Args, path, ""),
 		Env:           probeEnv(spec, "detect"),
 		Normalize:     spec.Normalize,
 		Timeout:       5 * time.Second,
@@ -93,19 +89,32 @@ func BuildProbeTask(spec Spec, probeName string, binaryPath string, workDir stri
 	if !ok {
 		return pty.PTYTask{}, CommandProbe{}, false
 	}
+	workDir = ExpandValue(firstNonEmpty(probe.WorkDir, workDir), binaryPath, workDir)
 	command := spec.Launch.Command
-	if command == "" || command == spec.Binary {
-		command = binaryPath
+	args := append([]string{}, spec.Launch.Args...)
+	if strings.TrimSpace(probe.Command) != "" {
+		command = probe.Command
+		args = nil
+	}
+	if len(probe.Args) > 0 {
+		args = append(args, probe.Args...)
+	}
+	ready := spec.Ready
+	if strings.TrimSpace(probe.Ready.Strategy) != "" {
+		ready = probe.Ready
+	}
+	if strings.TrimSpace(probe.Input) == "" {
+		ready = pty.MatcherSpec{}
 	}
 	task := pty.PTYTask{
 		AgentName:     spec.ID,
 		Purpose:       probeName,
-		Command:       command,
-		Args:          append([]string{}, spec.Launch.Args...),
+		Command:       ResolveCommand(command, spec.Binary, binaryPath, workDir),
+		Args:          ExpandArgs(args, binaryPath, workDir),
 		WorkDir:       workDir,
 		Env:           probeEnv(spec, probeName),
 		Input:         probe.Input,
-		ReadyMatcher:  spec.Ready,
+		ReadyMatcher:  ready,
 		DoneMatcher:   probe.CompleteWhen,
 		Normalize:     spec.Normalize,
 		ParseFrom:     firstNonEmpty(probe.ParseFrom, "clean_text"),

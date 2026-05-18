@@ -11,12 +11,12 @@ detect:
   args: ["--version"]
 launch:
   command: kimi
-  args: []
+  args: ["--work-dir", "{workdir}"]
 ready:
   strategy: screen_contains_any
   patterns:
-    - ">"
-    - "kimi"
+    - "Welcome to Kimi Code CLI"
+    - "Send /help"
 pty_env:
   NO_COLOR: "1"
   CLICOLOR: "0"
@@ -31,23 +31,31 @@ normalize:
   collapse_redraws: true
 commands:
   describe:
-    input: "/help\n"
-    timeout: 20s
+    command: kimi
+    args: ["-h"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   usage:
-    input: "info\n"
-    timeout: 20s
+    command: kimi
+    args: ["info", "--json"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   conversations_ls:
-    input: "/sessions\n"
-    timeout: 20s
-    parse_from: final_screen
+    display: "filesystem scan ~/.kimi/sessions"
+    command: sh
+    args:
+      - "-c"
+      - |
+        if [ -d "$HOME/.kimi/sessions" ]; then
+          find "$HOME/.kimi/sessions" -mindepth 2 -maxdepth 2 -type d -printf '%TY-%Tm-%Td %TH:%TM %f %p\n' | sort -r | head -50
+        else
+          echo "No Kimi conversations found"
+        fi
+    timeout: 10s
+    parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit

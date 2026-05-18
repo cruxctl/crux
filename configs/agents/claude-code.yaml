@@ -16,9 +16,8 @@ launch:
 ready:
   strategy: screen_contains_any
   patterns:
-    - ">"
-    - "Claude"
-    - "How can I help"
+    - "? for shortcuts"
+    - "Try \""
 pty_env:
   NO_COLOR: "1"
   CLICOLOR: "0"
@@ -33,30 +32,38 @@ normalize:
   collapse_redraws: true
 commands:
   describe:
-    input: "/help\n"
-    timeout: 20s
+    command: claude
+    args: ["-h"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   usage:
-    input: "/cost\n"
+    command: claude
+    args: ["-p", "/usage", "--output-format", "text", "--no-session-persistence"]
     timeout: 20s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   conversations_ls:
-    input: "/resume\n"
+    display: "filesystem scan ~/.claude/projects"
+    command: sh
+    args:
+      - "-c"
+      - |
+        if [ -d "$HOME/.claude/projects" ]; then
+          find "$HOME/.claude/projects" -maxdepth 2 -type f -name '*.jsonl' -printf '%TY-%Tm-%Td %TH:%TM %f %p\n' | sort -r | head -50
+        else
+          echo "No Claude Code conversations found"
+        fi
+    timeout: 10s
+    parse_from: clean_text
+    complete_when:
+      strategy: process_exit
+  mcp:
+    input: "/mcp\n"
     timeout: 20s
     parse_from: final_screen
     complete_when:
       strategy: screen_stable
-      stable_for_ms: 800
-  mcp:
-    input: "/mcp\n"
-    timeout: 20s
-    parse_from: clean_text
-    complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      stable_for_ms: 1500

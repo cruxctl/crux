@@ -30,23 +30,23 @@ normalize:
   collapse_redraws: true
 commands:
   describe:
-    input: "/help\n"
-    timeout: 20s
+    command: aider
+    args: ["--help"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   usage:
     input: "/tokens\n"
     timeout: 20s
-    parse_from: clean_text
+    parse_from: final_screen
     complete_when:
       strategy: screen_stable
-      stable_for_ms: 800
+      stable_for_ms: 1500
   conversations_ls:
     input: "/sessions\n"
     timeout: 20s
     parse_from: final_screen
     complete_when:
       strategy: screen_stable
-      stable_for_ms: 800
+      stable_for_ms: 1500

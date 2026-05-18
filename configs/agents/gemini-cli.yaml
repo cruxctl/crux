@@ -12,7 +12,7 @@ detect:
   args: ["--version"]
 launch:
   command: gemini
-  args: []
+  args: ["--skip-trust"]
 ready:
   strategy: screen_contains_any
   patterns:
@@ -33,23 +33,24 @@ normalize:
   collapse_redraws: true
 commands:
   describe:
-    input: "/help\n"
-    timeout: 20s
+    command: gemini
+    args: ["-h"]
+    timeout: 10s
     parse_from: clean_text
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: process_exit
   usage:
-    input: "/stats\n"
-    timeout: 20s
-    parse_from: clean_text
-    complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
-  conversations_ls:
-    input: "/chat\n"
+    command: gemini
+    args: ["--skip-trust", "--prompt-interactive", "/stats"]
     timeout: 20s
     parse_from: final_screen
     complete_when:
-      strategy: screen_stable
-      stable_for_ms: 800
+      strategy: screen_contains
+      pattern: "Tool Time"
+  conversations_ls:
+    command: gemini
+    args: ["--skip-trust", "--list-sessions"]
+    timeout: 10s
+    parse_from: clean_text
+    complete_when:
+      strategy: process_exit
