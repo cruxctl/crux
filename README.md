@@ -18,8 +18,6 @@ V0.1 CLI responsibilities:
 - update runtime config through `cruxd`;
 - install or update both `crux` and `cruxd` through explicit installer scripts.
 
-Deferred: Kubernetes, Docker Compose, agentgateway, MCP proxying, model routing, OIDC, console UI, approvals, AgBOM, and SDK adapters.
-
 ## Install
 
 ### Linux and macOS
