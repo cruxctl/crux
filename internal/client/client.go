@@ -73,38 +73,9 @@ func (c *Client) UpdateRuntimeConfig(ctx context.Context, patch cruxapi.RuntimeC
 	return out, nil
 }
 
-func (c *Client) ListAgents(ctx context.Context) ([]cruxapi.Agent, error) {
-	var out []cruxapi.Agent
-	return out, c.do(ctx, http.MethodGet, "/v1/agents", nil, &out)
-}
-
-func (c *Client) UpsertAgent(ctx context.Context, agent cruxapi.Agent) (cruxapi.Agent, error) {
-	var out cruxapi.Agent
-	return out, c.do(ctx, http.MethodPost, "/v1/agents", agent, &out)
-}
-
-func (c *Client) DeleteAgent(ctx context.Context, name string) error {
-	return c.do(ctx, http.MethodDelete, "/v1/agents/"+url.PathEscape(name), nil, nil)
-}
-
-func (c *Client) Discover(ctx context.Context) ([]cruxapi.DiscoveryResult, error) {
-	var out []cruxapi.DiscoveryResult
-	return out, c.do(ctx, http.MethodPost, "/v1/discover", map[string]any{}, &out)
-}
-
-func (c *Client) Run(ctx context.Context, req cruxapi.SubmitExecutionRequest) (cruxapi.Execution, error) {
-	var out cruxapi.Execution
-	return out, c.do(ctx, http.MethodPost, "/v1/executions", req, &out)
-}
-
 func (c *Client) ListExecutions(ctx context.Context) ([]cruxapi.Execution, error) {
 	var out []cruxapi.Execution
 	return out, c.do(ctx, http.MethodGet, "/v1/executions", nil, &out)
-}
-
-func (c *Client) GetExecution(ctx context.Context, id string) (cruxapi.Execution, error) {
-	var out cruxapi.Execution
-	return out, c.do(ctx, http.MethodGet, "/v1/executions/"+url.PathEscape(id), nil, &out)
 }
 
 func (c *Client) Events(ctx context.Context, executionID string) ([]cruxapi.Event, error) {
@@ -114,41 +85,6 @@ func (c *Client) Events(ctx context.Context, executionID string) ([]cruxapi.Even
 	}
 	var out []cruxapi.Event
 	return out, c.do(ctx, http.MethodGet, path, nil, &out)
-}
-
-func (c *Client) AgentUsage(ctx context.Context, name string) (cruxapi.AgentUsage, error) {
-	var out cruxapi.AgentUsage
-	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/usage", nil, &out)
-}
-
-func (c *Client) AgentCapabilities(ctx context.Context, name string) (cruxapi.AgentCapabilities, error) {
-	var out cruxapi.AgentCapabilities
-	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/capabilities", nil, &out)
-}
-
-func (c *Client) AgentCost(ctx context.Context, name string) (cruxapi.AgentCostSnapshot, error) {
-	var out cruxapi.AgentCostSnapshot
-	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/cost", nil, &out)
-}
-
-func (c *Client) AgentSessions(ctx context.Context, name string) ([]cruxapi.AgentSession, error) {
-	var out []cruxapi.AgentSession
-	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/sessions", nil, &out)
-}
-
-func (c *Client) AgentHistory(ctx context.Context, name string) ([]cruxapi.AgentHistoryItem, error) {
-	var out []cruxapi.AgentHistoryItem
-	return out, c.do(ctx, http.MethodGet, "/v1/agents/"+url.PathEscape(name)+"/history", nil, &out)
-}
-
-func (c *Client) AgentExecPlan(ctx context.Context, name string, req cruxapi.AgentExecPlanRequest) (cruxapi.AgentExecPlan, error) {
-	var out cruxapi.AgentExecPlan
-	return out, c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(name)+"/exec/plan", req, &out)
-}
-
-func (c *Client) RecordAgentExec(ctx context.Context, name string, req cruxapi.AgentExecRecordRequest) (cruxapi.AgentExecRecordResponse, error) {
-	var out cruxapi.AgentExecRecordResponse
-	return out, c.do(ctx, http.MethodPost, "/v1/agents/"+url.PathEscape(name)+"/exec/record", req, &out)
 }
 
 func (c *Client) do(ctx context.Context, method, path string, in, out any) error {

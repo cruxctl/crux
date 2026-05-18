@@ -1,0 +1,51 @@
+id: opencode
+name: OpenCode
+provider: OpenCode
+binary: opencode
+config_paths:
+  - ~/.config/opencode
+detect:
+  command: opencode
+  args: ["--version"]
+launch:
+  command: opencode
+  args: []
+ready:
+  strategy: screen_contains_any
+  patterns:
+    - ">"
+    - "opencode"
+pty_env:
+  NO_COLOR: "1"
+  CLICOLOR: "0"
+  FORCE_COLOR: "0"
+  TERM: xterm-256color
+normalize:
+  strip_ansi: true
+  strip_control_chars: true
+  normalize_boxes: true
+  normalize_whitespace: true
+  remove_spinners: true
+  collapse_redraws: true
+commands:
+  describe:
+    input: "/help\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  usage:
+    input: "/status\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  conversations_ls:
+    input: "/sessions\n"
+    timeout: 20s
+    parse_from: final_screen
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800

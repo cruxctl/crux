@@ -1,0 +1,52 @@
+id: aider
+name: Aider
+provider: Aider
+binary: aider
+config_paths:
+  - ~/.aider.conf.yml
+  - .aider.conf.yml
+detect:
+  command: aider
+  args: ["--version"]
+launch:
+  command: aider
+  args: []
+ready:
+  strategy: screen_contains_any
+  patterns:
+    - ">"
+    - "aider"
+pty_env:
+  NO_COLOR: "1"
+  CLICOLOR: "0"
+  FORCE_COLOR: "0"
+  TERM: xterm-256color
+normalize:
+  strip_ansi: true
+  strip_control_chars: true
+  normalize_boxes: true
+  normalize_whitespace: true
+  remove_spinners: true
+  collapse_redraws: true
+commands:
+  describe:
+    input: "/help\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  usage:
+    input: "/tokens\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  conversations_ls:
+    input: "/sessions\n"
+    timeout: 20s
+    parse_from: final_screen
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800

@@ -1,3 +1,5 @@
+github.com/creack/pty v1.1.24 h1:bJrF4RRfyJnbTJqzRLHzcGaZK1NeM5kTC9jGgovnR1s=
+github.com/creack/pty v1.1.24/go.mod h1:08sCNb52WyoAwi2QDyzUCTgcvVFhUzewun7wtTfvcwE=
 github.com/cruxctl/cruxd v0.0.0-20260517233621-8711db6cc040 h1:Zfx9jLiJ7KyMvI1mFqn8An06seKxXaZWs1/hWQ0kmso=
 github.com/cruxctl/cruxd v0.0.0-20260517233621-8711db6cc040/go.mod h1:RYCDSxArWozywuNvRC1WxdBdkqLCI00VkD45y2d61YQ=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=

@@ -1,0 +1,62 @@
+id: claude-code
+name: Claude Code
+provider: Anthropic
+binary: claude
+aliases:
+  - claude
+config_paths:
+  - ~/.claude
+  - CLAUDE.md
+detect:
+  command: claude
+  args: ["--version"]
+launch:
+  command: claude
+  args: []
+ready:
+  strategy: screen_contains_any
+  patterns:
+    - ">"
+    - "Claude"
+    - "How can I help"
+pty_env:
+  NO_COLOR: "1"
+  CLICOLOR: "0"
+  FORCE_COLOR: "0"
+  TERM: xterm-256color
+normalize:
+  strip_ansi: true
+  strip_control_chars: true
+  normalize_boxes: true
+  normalize_whitespace: true
+  remove_spinners: true
+  collapse_redraws: true
+commands:
+  describe:
+    input: "/help\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  usage:
+    input: "/cost\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  conversations_ls:
+    input: "/resume\n"
+    timeout: 20s
+    parse_from: final_screen
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800
+  mcp:
+    input: "/mcp\n"
+    timeout: 20s
+    parse_from: clean_text
+    complete_when:
+      strategy: screen_stable
+      stable_for_ms: 800

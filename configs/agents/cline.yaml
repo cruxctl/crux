@@ -1,0 +1,29 @@
+id: cline
+name: Cline
+provider: Cline
+binary: cline
+config_paths:
+  - ~/.config/Code/User/globalStorage/saoudrizwan.claude-dev
+detect:
+  command: cline
+  args: ["--version"]
+launch:
+  command: cline
+  args: []
+ready:
+  strategy: screen_contains_any
+  patterns:
+    - "cline"
+pty_env:
+  NO_COLOR: "1"
+  CLICOLOR: "0"
+  FORCE_COLOR: "0"
+  TERM: xterm-256color
+normalize:
+  strip_ansi: true
+  strip_control_chars: true
+  normalize_boxes: true
+  normalize_whitespace: true
+  remove_spinners: true
+  collapse_redraws: true
+commands: {}
