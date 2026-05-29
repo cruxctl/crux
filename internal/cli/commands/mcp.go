@@ -1,15 +1,29 @@
 package commands
 
+import (
+	"context"
+	"fmt"
+)
 
 func mcpCmd() *Cmd {
 	return &Cmd{
 		Name:  "mcp",
-		Short: "Manage MCP servers and tools",
+		Short: "Manage MCP servers",
 		Subcommands: []*Cmd{
-			{Name: "servers", Run: notImplCmd("mcp servers")},
-			{Name: "tools", Run: notImplCmd("mcp tools")},
-			{Name: "calls", Run: notImplCmd("mcp calls")},
-			{Name: "proxy", Run: notImplCmd("mcp proxy")},
+			{
+				Name: "list",
+				Run: func(ctx context.Context, args []string, opts Options) error {
+					c := clientFromOpts(opts)
+					servers, err := c.ListMCPServers(ctx)
+					if err != nil {
+						return err
+					}
+					for _, s := range servers {
+						fmt.Fprintf(opts.Out, "%s %s\n", s.Name, s.Status)
+					}
+					return nil
+				},
+			},
 		},
 	}
 }

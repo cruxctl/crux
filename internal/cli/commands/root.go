@@ -7,6 +7,8 @@ import (
 	"context"
 	"fmt"
 	"io"
+
+	"github.com/cruxctl/crux/internal/client"
 )
 
 type Options struct {
@@ -50,4 +52,12 @@ func notImplCmd(name string) func(context.Context, []string, Options) error {
 		fmt.Fprintf(opts.Out, "%s: not implemented yet\n", name)
 		return nil
 	}
+}
+
+func clientFromOpts(opts Options) *client.Client {
+	url := opts.ServerURL
+	if url == "" {
+		url = "http://localhost:4357"
+	}
+	return client.New(url, opts.APIKey)
 }

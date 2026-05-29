@@ -1,16 +1,29 @@
 package commands
 
+import (
+	"context"
+	"fmt"
+)
 
 func policyCmd() *Cmd {
 	return &Cmd{
 		Name:  "policy",
-		Short: "Manage policy profiles",
+		Short: "Manage policies",
 		Subcommands: []*Cmd{
-			{Name: "list", Run: notImplCmd("policy list")},
-			{Name: "get", Run: notImplCmd("policy get")},
-			{Name: "apply", Run: notImplCmd("policy apply")},
-			{Name: "delete", Run: notImplCmd("policy delete")},
-			{Name: "evaluate", Run: notImplCmd("policy evaluate")},
+			{
+				Name: "list",
+				Run: func(ctx context.Context, args []string, opts Options) error {
+					c := clientFromOpts(opts)
+					policies, err := c.ListPolicies(ctx)
+					if err != nil {
+						return err
+					}
+					for _, p := range policies {
+						fmt.Fprintf(opts.Out, "%s (%d rules)\n", p.Metadata.ID, len(p.Rules))
+					}
+					return nil
+				},
+			},
 		},
 	}
 }
