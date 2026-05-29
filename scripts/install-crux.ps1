@@ -94,7 +94,7 @@ if (-not (Test-Path $ConfigPath)) {
 currentContext: local
 contexts:
   local:
-    serverUrl: http://127.0.0.1:7700
+    serverUrl: http://127.0.0.1:4357
     namespace: default
 "@ | Set-Content -NoNewline -Encoding UTF8 $ConfigPath
 }

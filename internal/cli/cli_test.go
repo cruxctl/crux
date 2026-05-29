@@ -23,15 +23,18 @@ func TestDiscoverHelpDoesNotRunDiscovery(t *testing.T) {
 	}
 }
 
-func TestLegacyAgentsCommandRemoved(t *testing.T) {
+func TestAgentsCommandShowsHelp(t *testing.T) {
 	var out, errOut bytes.Buffer
 	code := New(&out, &errOut).Run(context.Background(), []string{"agents", "--help"})
 
-	if code == 0 {
-		t.Fatalf("expected removed command to fail; stdout=%q", out.String())
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d; stderr=%q", code, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "unknown command") {
-		t.Fatalf("expected unknown command error, got %q", errOut.String())
+	if !strings.Contains(out.String(), "crux agents") {
+		t.Fatalf("expected agents usage, got %q", out.String())
+	}
+	if errOut.Len() != 0 {
+		t.Fatalf("expected no stderr, got %q", errOut.String())
 	}
 }
 

@@ -17,7 +17,7 @@ func TestCLIConfigDefaultContext(t *testing.T) {
 	if name != "local" {
 		t.Fatalf("expected local context, got %s", name)
 	}
-	if ctx.ServerURL != "http://127.0.0.1:7700" {
+	if ctx.ServerURL != "http://127.0.0.1:4357" {
 		t.Fatalf("unexpected server URL %s", ctx.ServerURL)
 	}
 }

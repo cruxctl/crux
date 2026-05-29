@@ -136,7 +136,7 @@ if [ ! -f "$CONFIG_DIR/config.yaml" ]; then
 currentContext: local
 contexts:
   local:
-    serverUrl: http://127.0.0.1:7700
+    serverUrl: http://127.0.0.1:4357
     namespace: default
 EOF
 fi

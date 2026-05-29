@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/cruxctl/crux/internal/client"
+	"github.com/cruxctl/crux/internal/cli/commands"
 	"github.com/cruxctl/crux/internal/config"
 	"github.com/cruxctl/crux/internal/logging"
 	"github.com/cruxctl/cruxd/pkg/cruxapi"
@@ -120,7 +121,12 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 	case "events":
 		runErr = c.events(ctx, opts, rest)
 	default:
-		runErr = c.agentScoped(ctx, opts, cmd, rest)
+		// Try the canonical command tree first, then fall back to agent-scoped dispatch.
+		if treeCmd, subRest := lookupCommand(commands.Root(), cmd, rest); treeCmd != nil && treeCmd.Run != nil {
+			runErr = treeCmd.Run(ctx, subRest, c.toCmdOpts(opts))
+		} else {
+			runErr = c.agentScoped(ctx, opts, cmd, rest)
+		}
 	}
 	if runErr != nil {
 		if errors.Is(runErr, flag.ErrHelp) {
@@ -134,8 +140,37 @@ func (c *CLI) Run(ctx context.Context, args []string) int {
 	return 0
 }
 
+func lookupCommand(root *commands.Cmd, name string, args []string) (*commands.Cmd, []string) {
+	for _, sc := range root.Subcommands {
+		if sc.Name == name {
+			if len(args) == 0 {
+				return sc, args
+			}
+			for _, ssc := range sc.Subcommands {
+				if ssc.Name == args[0] {
+					return ssc, args[1:]
+				}
+			}
+			return sc, args
+		}
+	}
+	return nil, args
+}
+
+func (c *CLI) toCmdOpts(opts rootOptions) commands.Options {
+	return commands.Options{
+		Out:         c.out,
+		Err:         c.err,
+		Format:      opts.output,
+		ContextName: opts.context,
+		ServerURL:   opts.serverURL,
+		APIKey:      opts.apiKey,
+		ConfigPath:  opts.configPath,
+	}
+}
+
 func (c *CLI) usage() {
-	fmt.Fprintln(c.out, `Crux Control MVP
+	fmt.Fprintln(c.out, `Crux Control
 
 Usage:
   crux [global flags] <command> [args]
@@ -161,6 +196,20 @@ Commands:
   ps                 List discovered coding agents
   trace              Show events for an execution
   events             Show all daemon events
+  daemon             Manage the cruxd daemon
+  agents             Manage registered agents
+  agent              Operate a single agent
+  run                Run a task through an agent
+  sessions           List or inspect PTY sessions
+  gateway            Manage gateway settings
+  mcp                Manage MCP servers
+  policy             Manage policies
+  aos                AOS operations
+  agbom              View AgBOM
+  console            Open web console
+  usage              View usage and costs
+  machines           Manage machines
+  audit              View audit logs
 
 Agent commands:
   crux claude-code describe
@@ -231,6 +280,76 @@ Show events for an execution.`)
   crux events [ls]
 
 Show all daemon events.`)
+	case "daemon":
+		fmt.Fprintln(c.out, `Usage:
+  crux daemon <start|stop|restart|status|logs>
+
+Manage the cruxd daemon.`)
+	case "agents":
+		fmt.Fprintln(c.out, `Usage:
+  crux agents <list|get|register|unregister>
+
+Manage registered agents.`)
+	case "agent":
+		fmt.Fprintln(c.out, `Usage:
+  crux agent <describe|usage|exec|conversations>
+
+Operate a single agent.`)
+	case "run":
+		fmt.Fprintln(c.out, `Usage:
+  crux run <agent> [--repo DIR] [-- PROVIDER_ARGS...]
+
+Run a task through an agent.`)
+	case "sessions":
+		fmt.Fprintln(c.out, `Usage:
+  crux sessions [ls|get <id>]
+
+List or inspect PTY sessions.`)
+	case "gateway":
+		fmt.Fprintln(c.out, `Usage:
+  crux gateway <status|config>
+
+Manage gateway settings.`)
+	case "mcp":
+		fmt.Fprintln(c.out, `Usage:
+  crux mcp <list|add|remove>
+
+Manage MCP servers.`)
+	case "policy":
+		fmt.Fprintln(c.out, `Usage:
+  crux policy <list|get|apply>
+
+Manage policies.`)
+	case "aos":
+		fmt.Fprintln(c.out, `Usage:
+  crux aos <status|events>
+
+AOS operations.`)
+	case "agbom":
+		fmt.Fprintln(c.out, `Usage:
+  crux agbom [view]
+
+View AgBOM.`)
+	case "console":
+		fmt.Fprintln(c.out, `Usage:
+  crux console
+
+Open web console.`)
+	case "usage":
+		fmt.Fprintln(c.out, `Usage:
+  crux usage [summary]
+
+View usage and costs.`)
+	case "machines":
+		fmt.Fprintln(c.out, `Usage:
+  crux machines [ls]
+
+Manage machines.`)
+	case "audit":
+		fmt.Fprintln(c.out, `Usage:
+  crux audit [ls]
+
+View audit logs.`)
 	default:
 		return false
 	}
@@ -278,7 +397,7 @@ func nestedHelpArg(command string, args []string) bool {
 		return false
 	}
 	switch command {
-	case "config", "context":
+	case "config", "context", "daemon", "agents", "agent", "gateway", "mcp", "policy", "aos", "sessions":
 		return true
 	default:
 		return false
