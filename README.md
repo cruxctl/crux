@@ -19,23 +19,25 @@ Current CLI responsibilities:
 
 ## Install
 
-### Linux and macOS
+Linux / macOS:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.sh | sh
+curl -fsSL https://get.cruxcontrol.dev/install.sh | sh
 ```
 
-Force-refresh the local daemon binary and user service:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.sh | sh -s -- --force
-```
-
-### Windows
+Windows (PowerShell):
 
 ```powershell
-iwr https://raw.githubusercontent.com/cruxctl/crux/main/scripts/install-crux.ps1 -UseB | iex
+iwr https://get.cruxcontrol.dev/install.ps1 -useb | iex
 ```
+
+Optional: install the web Console alongside the daemon:
+
+```bash
+curl -fsSL https://get.cruxcontrol.dev/install.sh | sh -s -- --with-console
+```
+
+See the [full install guide](https://docs.crux.dev/install) for offline installs, checksum verification, and uninstall.
 
 ### From Source
 
