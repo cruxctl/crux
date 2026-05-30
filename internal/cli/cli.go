@@ -18,7 +18,7 @@ import (
 	"github.com/cruxctl/crux/internal/cli/commands"
 	"github.com/cruxctl/crux/internal/config"
 	"github.com/cruxctl/crux/internal/logging"
-	"github.com/cruxctl/cruxd/pkg/cruxapi"
+	"github.com/cruxctl/crux/pkg/cruxapi"
 	"gopkg.in/yaml.v3"
 )
 
@@ -37,6 +37,7 @@ type rootOptions struct {
 	logLevel   string
 	logFile    string
 	logFormat  string
+	verbose    bool
 }
 
 func New(out, err io.Writer) *CLI {
@@ -166,56 +167,42 @@ func (c *CLI) toCmdOpts(opts rootOptions) commands.Options {
 		ServerURL:   opts.serverURL,
 		APIKey:      opts.apiKey,
 		ConfigPath:  opts.configPath,
+		Verbose:     opts.verbose,
 	}
 }
 
 func (c *CLI) usage() {
-	fmt.Fprintln(c.out, `Crux Control
-
-Usage:
-  crux [global flags] <command> [args]
-  crux <command> [args] [global flags]
-  crux <agent-name> <describe|usage|exec|conversations>
-
-Global flags:
-  --config PATH      CLI config file (default ~/.config/crux/config.yaml)
-  --context NAME     CLI context name
-  --server URL       cruxd server URL override
-  --api-key KEY      API key override
-  -o, --output FMT   table, json, or yaml
-  --log-level LEVEL  debug, info, warn, or error
-  --log-file PATH    CLI log file override; "none" disables file logging
-
-Commands:
-  update             Install or update crux and cruxd
-  doctor             Check daemon health
-  version            Print client and server version
-  context            Manage CLI contexts
-  config             Get or update runtime config
-  discover           Discover installed coding agents
-  ps                 List discovered coding agents
-  trace              Show events for an execution
-  events             Show all daemon events
-  daemon             Manage the cruxd daemon
-  agents             Manage registered agents
-  agent              Operate a single agent
-  run                Run a task through an agent
-  sessions           List or inspect PTY sessions
-  gateway            Manage gateway settings
-  mcp                Manage MCP servers
-  policy             Manage policies
-  aos                AOS operations
-  agbom              View AgBOM
-  console            Open web console
-  usage              View usage and costs
-  machines           Manage machines
-  audit              View audit logs
-
-Agent commands:
-  crux claude-code describe
-  crux gemini-cli usage
-  crux aider exec --repo .
-  crux opencode conversations ls`)
+	fmt.Fprintln(c.out, "Crux Control")
+	fmt.Fprintln(c.out)
+	fmt.Fprintln(c.out, "Usage:")
+	fmt.Fprintln(c.out, "  crux [global flags] <command> [args]")
+	fmt.Fprintln(c.out, "  crux <command> [args] [global flags]")
+	fmt.Fprintln(c.out, "  crux <agent-name> <describe|usage|exec|conversations>")
+	fmt.Fprintln(c.out)
+	fmt.Fprintln(c.out, "Global flags:")
+	fmt.Fprintln(c.out, "  --config PATH      CLI config file (default ~/.config/crux/config.yaml)")
+	fmt.Fprintln(c.out, "  --context NAME     CLI context name")
+	fmt.Fprintln(c.out, "  --server URL       cruxd server URL override")
+	fmt.Fprintln(c.out, "  --api-key KEY      API key override")
+	fmt.Fprintln(c.out, "  -o, --output FMT   table, json, or yaml")
+	fmt.Fprintln(c.out, "  --log-level LEVEL  debug, info, warn, or error")
+	fmt.Fprintln(c.out, "  --log-file PATH    CLI log file override; \"none\" disables file logging")
+	fmt.Fprintln(c.out, "  -v, --verbose      Print stats after agent commands")
+	fmt.Fprintln(c.out)
+	fmt.Fprintln(c.out, "Commands:")
+	for _, cmd := range commands.Root().Subcommands {
+		name := cmd.Name
+		if len(cmd.Aliases) > 0 {
+			name += " (" + strings.Join(cmd.Aliases, ", ") + ")"
+		}
+		fmt.Fprintf(c.out, "  %-18s %s\n", name, cmd.Short)
+	}
+	fmt.Fprintln(c.out)
+	fmt.Fprintln(c.out, "Agent commands:")
+	fmt.Fprintln(c.out, "  crux claude-code describe")
+	fmt.Fprintln(c.out, "  crux gemini-cli usage")
+	fmt.Fprintln(c.out, "  crux aider exec --repo .")
+	fmt.Fprintln(c.out, "  crux opencode conversations ls")
 }
 
 func (c *CLI) commandUsage(command string, args []string) bool {
@@ -331,10 +318,7 @@ AOS operations.`)
 
 View AgBOM.`)
 	case "console":
-		fmt.Fprintln(c.out, `Usage:
-  crux console
-
-Open web console.`)
+		commands.ConsoleUsage(c.out)
 	case "usage":
 		fmt.Fprintln(c.out, `Usage:
   crux usage [summary]
@@ -417,6 +401,8 @@ func parseRoot(args []string) (rootOptions, string, []string, error) {
 	fs.StringVar(&opts.logLevel, "log-level", "", "log level")
 	fs.StringVar(&opts.logFile, "log-file", "", "log file")
 	fs.StringVar(&opts.logFormat, "log-format", "", "log format")
+	fs.BoolVar(&opts.verbose, "verbose", false, "verbose output with stats")
+	fs.BoolVar(&opts.verbose, "v", false, "verbose output with stats")
 	if err := fs.Parse(args); err != nil {
 		return opts, "", nil, err
 	}
@@ -981,7 +967,7 @@ func (c *CLI) configureLogging(opts rootOptions) (func() error, error) {
 		Format:     opts.logFormat,
 		MaxSizeMB:  10,
 		MaxBackups: 5,
-	})
+	}, os.Stderr)
 	if err != nil {
 		return nil, err
 	}

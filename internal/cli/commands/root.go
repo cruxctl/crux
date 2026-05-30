@@ -20,6 +20,7 @@ type Options struct {
 	APIKey      string
 	ConfigPath  string
 	Quiet       bool
+	Verbose     bool
 }
 
 type Cmd struct {

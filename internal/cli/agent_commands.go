@@ -183,6 +183,9 @@ func (c *CLI) describePTYAgent(ctx context.Context, opts rootOptions, store agen
 			_ = store.SaveAgent(state)
 		}
 	}
+	if opts.verbose {
+		printVerboseStats(c.out, spec.ID, "describe", probe)
+	}
 	if opts.output != "table" {
 		return c.print(opts.output, struct {
 			Agent agent.AgentState   `json:"agent" yaml:"agent"`
@@ -200,6 +203,9 @@ func (c *CLI) runPTYProbe(ctx context.Context, opts rootOptions, store agent.Sto
 	result, err := runSpecProbe(ctx, store, spec, state, probeName, currentWorkingDir())
 	if err != nil {
 		return err
+	}
+	if opts.verbose {
+		printVerboseStats(c.out, spec.ID, probeName, &result)
 	}
 	if opts.output != "table" {
 		return c.print(opts.output, result)
@@ -450,6 +456,20 @@ func printProbeResult(out io.Writer, result agent.ProbeResult) {
 	}
 	if result.Error != "" {
 		fmt.Fprintf(out, "Error: %s\n", result.Error)
+	}
+}
+
+func printVerboseStats(out io.Writer, agentName, probeName string, probe *agent.ProbeResult) {
+	fmt.Fprintln(out)
+	fmt.Fprintf(out, "Agent: %s\n", agentName)
+	fmt.Fprintf(out, "Probe: %s\n", probeName)
+	fmt.Fprintln(out, "Probe source: PTY probe")
+	if probe != nil && !probe.EndedAt.IsZero() {
+		fmt.Fprintf(out, "Last updated: %s\n", probe.EndedAt.Format(time.RFC3339))
+		fmt.Fprintf(out, "Confidence: %s\n", firstNonEmpty(probe.Confidence, "medium"))
+	} else {
+		fmt.Fprintln(out, "Last updated: —")
+		fmt.Fprintln(out, "Confidence: low")
 	}
 }
 

@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/cruxctl/cruxd/pkg/cruxapi"
+	"github.com/cruxctl/crux/pkg/cruxapi"
 )
 
 // --- Agents ---

@@ -6,9 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 type Runner struct {
@@ -61,6 +64,13 @@ func (r *Runner) runInteractive(ctx context.Context, terminal *PTYTerminal, task
 	if task.Stdout == nil {
 		task.Stdout = io.Discard
 	}
+
+	// Save terminal state and switch to raw mode for interactive PTY passthrough.
+	var oldState *unix.Termios
+	if task.Stdin != nil && IsTerminal(int(os.Stdin.Fd())) {
+		oldState, _ = SetRawMode(int(os.Stdin.Fd()))
+	}
+
 	var raw bytes.Buffer
 	readDone := make(chan error, 1)
 	go func() {
@@ -73,6 +83,12 @@ func (r *Runner) runInteractive(ctx context.Context, terminal *PTYTerminal, task
 	}
 	waitErr := terminal.Wait()
 	<-readDone
+
+	// Restore terminal state regardless of how we exit.
+	if oldState != nil {
+		_ = RestoreTerminalState(int(os.Stdin.Fd()), oldState)
+	}
+
 	ended := time.Now().UTC()
 	result := &PTYResult{
 		AgentName: task.AgentName,
@@ -92,7 +108,7 @@ func (r *Runner) runInteractive(ctx context.Context, terminal *PTYTerminal, task
 	if err == nil {
 		result.Normalized = normalized
 	}
-	return result, nil
+	return result, waitErr
 }
 
 func (r *Runner) runProbe(ctx context.Context, terminal *PTYTerminal, task PTYTask) (*PTYResult, error) {

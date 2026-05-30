@@ -41,44 +41,43 @@ func DefaultLogFile() string {
 	}
 }
 
-func New(opts Options) (*slog.Logger, func() error, error) {
-	level, err := parseLevel(firstNonEmpty(opts.Level, envOrDefault("CRUX_LOG_LEVEL", "info")))
+func New(opts Options, stderr io.Writer) (*slog.Logger, func() error, error) {
+	level, err := parseLevel(opts.Level)
 	if err != nil {
 		return nil, nil, err
 	}
-	file := firstNonEmpty(opts.File, envOrDefault("CRUX_LOG_FILE", DefaultLogFile()))
-	format := firstNonEmpty(opts.Format, envOrDefault("CRUX_LOG_FORMAT", "text"))
 	if opts.MaxSizeMB <= 0 {
-		opts.MaxSizeMB = envInt("CRUX_LOG_MAX_SIZE_MB", 10)
+		opts.MaxSizeMB = 10
 	}
-	if opts.MaxBackups <= 0 {
-		opts.MaxBackups = envInt("CRUX_LOG_MAX_BACKUPS", 5)
+	if opts.MaxBackups < 0 {
+		opts.MaxBackups = 0
 	}
-	writer, closeFn, err := logWriter(file, opts.MaxSizeMB, opts.MaxBackups)
-	if err != nil {
-		return nil, nil, err
+	if strings.TrimSpace(opts.Format) == "" {
+		opts.Format = "text"
+	}
+
+	writers := []io.Writer{stderr}
+	var closer func() error = func() error { return nil }
+	if strings.TrimSpace(opts.File) != "" {
+		rotator, err := NewRotatingFile(opts.File, int64(opts.MaxSizeMB)*1024*1024, opts.MaxBackups)
+		if err != nil {
+			return nil, nil, err
+		}
+		writers = append(writers, rotator)
+		closer = rotator.Close
 	}
 	handlerOptions := &slog.HandlerOptions{Level: level}
-	switch strings.ToLower(strings.TrimSpace(format)) {
+	var handler slog.Handler
+	writer := io.MultiWriter(writers...)
+	switch strings.ToLower(strings.TrimSpace(opts.Format)) {
 	case "json":
-		return slog.New(slog.NewJSONHandler(writer, handlerOptions)), closeFn, nil
+		handler = slog.NewJSONHandler(writer, handlerOptions)
 	case "text":
-		return slog.New(slog.NewTextHandler(writer, handlerOptions)), closeFn, nil
+		handler = slog.NewTextHandler(writer, handlerOptions)
 	default:
-		_ = closeFn()
-		return nil, nil, fmt.Errorf("unsupported log format %q", format)
+		return nil, nil, fmt.Errorf("unsupported log format %q", opts.Format)
 	}
-}
-
-func logWriter(path string, maxSizeMB, maxBackups int) (io.Writer, func() error, error) {
-	if strings.TrimSpace(path) == "" || strings.EqualFold(path, "none") {
-		return io.Discard, func() error { return nil }, nil
-	}
-	rotator, err := NewRotatingFile(path, int64(maxSizeMB)*1024*1024, maxBackups)
-	if err != nil {
-		return nil, nil, err
-	}
-	return rotator, rotator.Close, nil
+	return slog.New(handler), closer, nil
 }
 
 func parseLevel(value string) (slog.Level, error) {
@@ -122,7 +121,7 @@ func NewRotatingFile(path string, maxBytes int64, maxBackups int) (*RotatingFile
 	info, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return nil, err
+		return nil, fmt.Errorf("stat log file %s: %w", path, err)
 	}
 	return &RotatingFile{path: path, maxBytes: maxBytes, maxBackups: maxBackups, file: file, size: info.Size()}, nil
 }
@@ -164,13 +163,13 @@ func (w *RotatingFile) rotateLocked() error {
 			oldPath := backupPath(w.path, i)
 			if _, err := os.Stat(oldPath); err == nil {
 				if err := os.Rename(oldPath, backupPath(w.path, i+1)); err != nil {
-					return err
+					return fmt.Errorf("rotate log backup: %w", err)
 				}
 			}
 		}
 		if _, err := os.Stat(w.path); err == nil {
 			if err := os.Rename(w.path, backupPath(w.path, 1)); err != nil {
-				return err
+				return fmt.Errorf("rotate log file: %w", err)
 			}
 		}
 	} else {
@@ -178,7 +177,7 @@ func (w *RotatingFile) rotateLocked() error {
 	}
 	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("open rotated log file: %w", err)
 	}
 	w.file = file
 	w.size = 0
@@ -187,32 +186,4 @@ func (w *RotatingFile) rotateLocked() error {
 
 func backupPath(path string, index int) string {
 	return fmt.Sprintf("%s.%d", path, index)
-}
-
-func envOrDefault(key, fallback string) string {
-	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-		return value
-	}
-	return fallback
-}
-
-func envInt(key string, fallback int) int {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil || parsed <= 0 {
-		return fallback
-	}
-	return parsed
-}
-
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
 }

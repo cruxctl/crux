@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/cruxctl/cruxd/pkg/cruxapi"
+	"github.com/cruxctl/crux/pkg/cruxapi"
 )
 
 type Client struct {

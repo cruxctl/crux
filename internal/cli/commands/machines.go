@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/cruxctl/cruxd/pkg/cruxapi"
+	"github.com/cruxctl/crux/pkg/cruxapi"
 )
 
 func machinesCmd() *Cmd {

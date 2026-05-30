@@ -13,7 +13,7 @@ import (
 	"github.com/cruxctl/crux/internal/agent"
 	"github.com/cruxctl/crux/internal/client"
 	"github.com/cruxctl/crux/internal/config"
-	"github.com/cruxctl/cruxd/pkg/cruxapi"
+	"github.com/cruxctl/crux/pkg/cruxapi"
 	"gopkg.in/yaml.v3"
 )
 
